@@ -1,0 +1,33 @@
+[package]
+name    = "rolldown_deno"
+version = "0.1.0"
+
+edition.workspace    = true
+homepage.workspace   = true
+license.workspace    = true
+repository.workspace = true
+
+[[bin]]
+name = "rolldown_deno"
+path = "main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+deno_cache_dir        = { version = "0.20.0", features = ["sync"] }
+deno_config           = { version = "0.54.2", features = ["workspace", "sync"] }
+deno_graph            = "0.90.0"
+deno_path_util        = "0.3.2"
+deno_resolver         = { path = "../../../deno/resolvers/deno", features = ["sync"] }
+node_resolver         = { path = "../../../deno/resolvers/node", features = ["sync"] }
+reqwest               = "0.12.9"
+rolldown              = { version = "0.1.0", path = "../rolldown" }
+rolldown_common       = { version = "0.1.0", path = "../rolldown_common" }
+rolldown_plugin       = { version = "0.1.0", path = "../rolldown_plugin" }
+rolldown_testing      = { version = "0.1.0", path = "../rolldown_testing" }
+sugar_path.workspace  = true
+sys_traits            = { version = "0.1.8", features = ["real", "libc", "winapi", "getrandom"] }
+tokio.workspace       = true
+url.workspace         = true
