@@ -3,7 +3,12 @@ use std::sync::Arc;
 use deno_cache_dir::file_fetcher::{
   CacheSetting, HeaderMap, NullBlobStore, SendError, SendResponse,
 };
+use deno_error::JsErrorBox;
 use deno_graph::{DefaultModuleAnalyzer, MediaType, Module, ModuleGraph};
+use deno_npm_cache::{NpmCacheHttpClientBytesResponse, NpmCacheHttpClientResponse};
+use deno_npm_installer::{
+  NpmInstallerFactory, NpmInstallerFactoryOptions, lifecycle_scripts::NullLifecycleScriptsExecutor,
+};
 use deno_resolver::{
   factory::{ResolverFactory, WorkspaceFactory},
   file_fetcher::{
@@ -13,6 +18,7 @@ use deno_resolver::{
   graph::DefaultDenoResolverRc,
   workspace::ScopedJsxImportSourceConfig,
 };
+use reqwest::{StatusCode, header};
 use rolldown::{
   Bundler, BundlerOptions, ChunkFilenamesOutputOption, InputItem, ModuleType, SourceMapType,
 };
@@ -160,13 +166,79 @@ impl deno_cache_dir::file_fetcher::HttpClient for RolldownHttpClient {
   }
 }
 
+#[async_trait::async_trait(?Send)]
+impl deno_npm_cache::NpmCacheHttpClient for RolldownHttpClient {
+  // todo: implement retrying
+  async fn download_with_retries_on_any_tokio_runtime(
+    &self,
+    url: Url,
+    maybe_auth: Option<String>,
+    maybe_etag: Option<String>,
+  ) -> Result<NpmCacheHttpClientResponse, deno_npm_cache::DownloadError> {
+    let mut headers = HeaderMap::new();
+    if let Some(auth) = maybe_auth {
+      headers.append(header::AUTHORIZATION, header::HeaderValue::try_from(auth).unwrap());
+    }
+    if let Some(etag) = maybe_etag {
+      headers.append(header::IF_NONE_MATCH, header::HeaderValue::try_from(etag).unwrap());
+    }
+    let response = self.client.get(url.clone()).headers(headers).send().await.map_err(|err| {
+      deno_npm_cache::DownloadError {
+        status_code: err.status().map(|s| s.as_u16()),
+        error: JsErrorBox::generic(err.to_string()),
+      }
+    })?;
+    if response.status() == StatusCode::NOT_FOUND {
+      Ok(NpmCacheHttpClientResponse::NotFound)
+    } else if response.status() == StatusCode::NOT_MODIFIED {
+      Ok(NpmCacheHttpClientResponse::NotModified)
+    } else if response.status().is_success() {
+      let headers = response.headers().clone(); // todo: do not clone here
+      let body = response.bytes().await.map_err(|err| deno_npm_cache::DownloadError {
+        status_code: err.status().map(|s| s.as_u16()),
+        error: JsErrorBox::generic(err.to_string()),
+      })?;
+      Ok(NpmCacheHttpClientResponse::Bytes(NpmCacheHttpClientBytesResponse {
+        etag: headers.get(header::ETAG).and_then(|e| e.to_str().map(|t| t.to_string()).ok()),
+        bytes: body.into(),
+      }))
+    } else {
+      Err(deno_npm_cache::DownloadError {
+        status_code: Some(response.status().as_u16()),
+        error: JsErrorBox::generic(response.status().canonical_reason().unwrap_or("unknown error")),
+      })
+    }
+  }
+}
+
 #[tokio::main(flavor = "current_thread")]
 #[allow(clippy::print_stdout)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let sys = RealSys;
   let cwd = sys.env_current_dir()?;
   let workspace_factory = Arc::new(WorkspaceFactory::new(sys.clone(), cwd, Default::default()));
-  let resolver_factory = ResolverFactory::new(workspace_factory.clone(), Default::default());
+  let resolver_factory =
+    Arc::new(ResolverFactory::new(workspace_factory.clone(), Default::default()));
+  let rolldown_client = Arc::new(RolldownHttpClient { client: reqwest::Client::new() });
+  let npm_installer_factory = NpmInstallerFactory::new(
+    resolver_factory.clone(),
+    rolldown_client,
+    Arc::new(NullLifecycleScriptsExecutor),
+    deno_npm_installer::LogReporter,
+    NpmInstallerFactoryOptions {
+      cache_setting: deno_npm_cache::NpmCacheSetting::Use,
+      caching_strategy: deno_npm_installer::graph::NpmCachingStrategy::Eager,
+      lifecycle_scripts_config: deno_npm_installer::LifecycleScriptsConfig {
+        allowed: deno_npm_installer::PackagesAllowedScripts::None,
+        initial_cwd: workspace_factory.initial_cwd().clone(),
+        root_dir: workspace_factory.workspace_directory()?.workspace.root_dir_path(),
+        explicit_install: false,
+      },
+      resolve_npm_resolution_snapshot: Box::new(|| Ok(None)),
+    },
+  );
+  let npm_package_info_provider = npm_installer_factory.lockfile_npm_package_info_provider()?;
+  let lockfile = workspace_factory.maybe_lockfile(npm_package_info_provider).await?;
   let resolver = resolver_factory.deno_resolver().await?;
   let cjs_tracker = resolver_factory.cjs_tracker()?;
   let jsx_config =
@@ -190,7 +262,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     workspace_factory.sys().clone(),
     DenoGraphLoaderOptions { file_header_overrides: Default::default(), permissions: None },
   );
+
+  let mut locker = lockfile.as_ref().map(|l| l.as_deno_graph_locker());
   let mut graph = deno_graph::ModuleGraph::new(deno_graph::GraphKind::CodeOnly);
+  let npm_resolver = npm_installer_factory.npm_deno_graph_resolver().await?;
   graph
     .build(
       roots,
@@ -201,12 +276,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         skip_dynamic_deps: false,
         module_info_cacher: Default::default(),
         executor: Default::default(),
-        locker: None,
+        locker: locker.as_mut().map(|l| l as _),
         file_system: &sys,
         jsr_url_provider: Default::default(),
         passthrough_jsr_specifiers: false,
         module_analyzer: &module_analyzer,
-        npm_resolver: None,
+        npm_resolver: Some(npm_resolver.as_ref()),
         reporter: None,
         resolver: Some(&graph_resolver),
       },
