@@ -134,9 +134,15 @@ fn media_to_module_type(media_type: MediaType) -> ModuleType {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let sys = RealSys;
   let cwd = sys.env_current_dir()?;
-  let entrypoint =
-    deno_path_util::url_from_file_path(&cwd.join(std::env::args().collect::<Vec<_>>().remove(1)))
-      .unwrap();
+  let entrypoint = std::env::args().collect::<Vec<_>>().remove(1);
+  let entrypoint = if entrypoint.starts_with("jsr:")
+    || entrypoint.starts_with("https:")
+    || entrypoint.starts_with("file:")
+  {
+    Url::parse(&entrypoint).unwrap()
+  } else {
+    deno_path_util::url_from_file_path(&cwd.join(entrypoint)).unwrap()
+  };
   let workspace_factory = Arc::new(WorkspaceFactory::new(sys.clone(), cwd, Default::default()));
   let cwd = workspace_factory.initial_cwd();
   let resolver_factory =
@@ -213,14 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let mut bundler = Bundler::with_plugins(
     BundlerOptions {
       input: Some(vec![InputItem {
-        name: Some(
-          // todo: improve lol
-          PathBuf::from(entrypoint.as_str().split('/').last().unwrap().to_string())
-            .file_stem()
-            .unwrap()
-            .to_string_lossy()
-            .to_string(),
-        ),
+        name: Some(resolve_display_name(&entrypoint)),
         import: entrypoint.to_string(),
       }]),
       entry_filenames: Some(ChunkFilenamesOutputOption::String("[name].bundle.js".to_string())),
@@ -249,4 +248,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   Ok(())
+}
+
+fn resolve_display_name(url: &Url) -> String {
+  if let Ok(reference) = deno_semver::jsr::JsrPackageReqReference::from_specifier(url) {
+    reference.req().name.split("/").skip(1).next().unwrap().to_string()
+  } else if let Ok(reference) = deno_semver::npm::NpmPackageReqReference::from_specifier(url) {
+    reference.req().name.to_string()
+  } else if url.scheme() == "file" {
+    // todo: improve lol
+    PathBuf::from(url.as_str().split('/').last().unwrap().to_string())
+      .file_stem()
+      .unwrap()
+      .to_string_lossy()
+      .to_string()
+  } else {
+    "remote".to_string()
+  }
 }
