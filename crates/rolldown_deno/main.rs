@@ -44,6 +44,7 @@ impl Plugin for HttpImportPlugin {
     _ctx: &rolldown_plugin::PluginContext,
     args: &rolldown_plugin::HookResolveIdArgs<'_>,
   ) -> rolldown_plugin::HookResolveIdReturn {
+    eprintln!("{}", args.specifier);
     let referrer = match args.importer {
       Some(importer) => Url::parse(importer)?,
       None => deno_path_util::url_from_directory_path(&std::env::current_dir()?)?,
@@ -73,26 +74,29 @@ impl Plugin for HttpImportPlugin {
 
     match self.graph.get(&url) {
       Some(Module::Js(js)) => Ok(Some(rolldown_plugin::HookLoadOutput {
-        code: js.source.to_string(),
+        code: js.source.clone().into(),
         module_type: Some(media_to_module_type(js.media_type)),
         ..Default::default()
       })),
       Some(Module::Json(json)) => Ok(Some(rolldown_plugin::HookLoadOutput {
-        code: json.source.to_string(),
+        code: json.source.clone().into(),
         module_type: Some(media_to_module_type(json.media_type)),
         ..Default::default()
       })),
       Some(Module::Wasm(_wasm)) => {
         panic!("Not supported.")
       }
-      Some(Module::Node(_) | Module::Npm(_) | Module::External(_)) | None => {
+      Some(Module::Npm(moodule)) => {
+        todo!("npm: {:?}", moodule.nv_reference);
+      }
+      Some(Module::Node(_) | Module::External(_)) | None => {
         tokio::task::spawn_blocking(|| {
           // super inefficient...
           let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
           rt.block_on(async move {
             let file = file_fetcher.fetch_bypass_permissions(&url).await?;
             Ok(Some(rolldown_plugin::HookLoadOutput {
-              code: String::from_utf8_lossy(&file.source).to_string(),
+              code: String::from_utf8_lossy(&file.source).into(),
               module_type: Some(media_to_module_type(MediaType::from_specifier_and_headers(
                 &url,
                 file.maybe_headers.as_ref(),
@@ -105,6 +109,10 @@ impl Plugin for HttpImportPlugin {
         .unwrap()
       }
     }
+  }
+
+  fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+    rolldown_plugin::HookUsage::ResolveId | rolldown_plugin::HookUsage::Load
   }
 }
 
@@ -165,6 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       resolve_npm_resolution_snapshot: Box::new(|| Ok(None)),
     },
   );
+  npm_installer_factory.initialize_npm_resolution_if_managed().await?;
   let npm_package_info_provider = npm_installer_factory.lockfile_npm_package_info_provider()?;
   let lockfile = workspace_factory.maybe_lockfile(npm_package_info_provider).await?;
   let resolver = resolver_factory.deno_resolver().await?;
@@ -231,7 +240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   );
   bundler.options().input.iter().for_each(|input| println!("Bundle {}", input.import));
 
-  let result = match bundler.write().await {
+  let result = match bundler.generate().await {
     Ok(result) => result,
     Err(err) => {
       panic!("{:?}", err);
