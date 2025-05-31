@@ -203,3 +203,6 @@ debug         = false     # Set to `true` for debug information
 lto           = "fat"
 opt-level     = 3
 strip         = "symbols" # Set to `false` for debug information
+
+[patch.crates-io]
+deno_graph = { path = "../deno_graph" }

@@ -1,11 +1,7 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use deno_cache_dir::file_fetcher::{
-  CacheSetting, HeaderMap, NullBlobStore, SendError, SendResponse,
-};
-use deno_error::JsErrorBox;
-use deno_graph::{DefaultModuleAnalyzer, MediaType, Module, ModuleGraph};
-use deno_npm_cache::{NpmCacheHttpClientBytesResponse, NpmCacheHttpClientResponse};
+use deno_cache_dir::file_fetcher::{CacheSetting, NullBlobStore};
+use deno_graph::{MediaType, Module, ModuleGraph};
 use deno_npm_installer::{
   NpmInstallerFactory, NpmInstallerFactoryOptions, lifecycle_scripts::NullLifecycleScriptsExecutor,
 };
@@ -18,16 +14,18 @@ use deno_resolver::{
   graph::DefaultDenoResolverRc,
   workspace::ScopedJsxImportSourceConfig,
 };
-use reqwest::{StatusCode, header};
 use rolldown::{
   Bundler, BundlerOptions, ChunkFilenamesOutputOption, InputItem, ModuleType, SourceMapType,
 };
 use rolldown_common::ImportKind;
 use rolldown_plugin::{HookResolveIdOutput, Plugin};
-use rolldown_testing::workspace;
-use sugar_path::SugarPath;
 use sys_traits::{EnvCurrentDir, impls::RealSys};
 use url::Url;
+
+use self::http_client::RolldownHttpClient;
+
+mod http_client;
+mod module_analyzer;
 
 #[derive(Debug)]
 struct HttpImportPlugin {
@@ -70,7 +68,6 @@ impl Plugin for HttpImportPlugin {
     _ctx: &rolldown_plugin::PluginContext,
     args: &rolldown_plugin::HookLoadArgs<'_>,
   ) -> rolldown_plugin::HookLoadReturn {
-    println!("Downloading: {}", args.id);
     let url = Url::parse(args.id)?;
     let file_fetcher = self.file_fetcher.clone();
 
@@ -132,97 +129,22 @@ fn media_to_module_type(media_type: MediaType) -> ModuleType {
   }
 }
 
-#[derive(Debug)]
-struct RolldownHttpClient {
-  client: reqwest::Client,
-}
-
-#[async_trait::async_trait(?Send)]
-impl deno_cache_dir::file_fetcher::HttpClient for RolldownHttpClient {
-  async fn send_no_follow(&self, url: &Url, headers: HeaderMap) -> Result<SendResponse, SendError> {
-    let response = self
-      .client
-      .get(url.clone())
-      .headers(headers)
-      .send()
-      .await
-      .map_err(|err| SendError::Failed(Box::new(err)))?;
-    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
-      Ok(SendResponse::NotModified)
-    } else if response.status().is_redirection() {
-      // todo: how to not clone?
-      let headers = response.headers().clone();
-      Ok(SendResponse::Redirect(headers))
-    } else if response.status() == reqwest::StatusCode::NOT_FOUND {
-      Err(SendError::NotFound)
-    } else if response.status().is_server_error() {
-      Err(SendError::StatusCode(response.status()))
-    } else {
-      // todo: how to not clone?
-      let headers = response.headers().clone();
-      let bytes = response.bytes().await.map_err(|err| SendError::Failed(Box::new(err)))?;
-      Ok(SendResponse::Success(headers, bytes.into()))
-    }
-  }
-}
-
-#[async_trait::async_trait(?Send)]
-impl deno_npm_cache::NpmCacheHttpClient for RolldownHttpClient {
-  // todo: implement retrying
-  async fn download_with_retries_on_any_tokio_runtime(
-    &self,
-    url: Url,
-    maybe_auth: Option<String>,
-    maybe_etag: Option<String>,
-  ) -> Result<NpmCacheHttpClientResponse, deno_npm_cache::DownloadError> {
-    let mut headers = HeaderMap::new();
-    if let Some(auth) = maybe_auth {
-      headers.append(header::AUTHORIZATION, header::HeaderValue::try_from(auth).unwrap());
-    }
-    if let Some(etag) = maybe_etag {
-      headers.append(header::IF_NONE_MATCH, header::HeaderValue::try_from(etag).unwrap());
-    }
-    let response = self.client.get(url.clone()).headers(headers).send().await.map_err(|err| {
-      deno_npm_cache::DownloadError {
-        status_code: err.status().map(|s| s.as_u16()),
-        error: JsErrorBox::generic(err.to_string()),
-      }
-    })?;
-    if response.status() == StatusCode::NOT_FOUND {
-      Ok(NpmCacheHttpClientResponse::NotFound)
-    } else if response.status() == StatusCode::NOT_MODIFIED {
-      Ok(NpmCacheHttpClientResponse::NotModified)
-    } else if response.status().is_success() {
-      let headers = response.headers().clone(); // todo: do not clone here
-      let body = response.bytes().await.map_err(|err| deno_npm_cache::DownloadError {
-        status_code: err.status().map(|s| s.as_u16()),
-        error: JsErrorBox::generic(err.to_string()),
-      })?;
-      Ok(NpmCacheHttpClientResponse::Bytes(NpmCacheHttpClientBytesResponse {
-        etag: headers.get(header::ETAG).and_then(|e| e.to_str().map(|t| t.to_string()).ok()),
-        bytes: body.into(),
-      }))
-    } else {
-      Err(deno_npm_cache::DownloadError {
-        status_code: Some(response.status().as_u16()),
-        error: JsErrorBox::generic(response.status().canonical_reason().unwrap_or("unknown error")),
-      })
-    }
-  }
-}
-
 #[tokio::main(flavor = "current_thread")]
 #[allow(clippy::print_stdout)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let sys = RealSys;
   let cwd = sys.env_current_dir()?;
+  let entrypoint =
+    deno_path_util::url_from_file_path(&cwd.join(std::env::args().collect::<Vec<_>>().remove(1)))
+      .unwrap();
   let workspace_factory = Arc::new(WorkspaceFactory::new(sys.clone(), cwd, Default::default()));
+  let cwd = workspace_factory.initial_cwd();
   let resolver_factory =
     Arc::new(ResolverFactory::new(workspace_factory.clone(), Default::default()));
-  let rolldown_client = Arc::new(RolldownHttpClient { client: reqwest::Client::new() });
+  let rolldown_client = RolldownHttpClient::default();
   let npm_installer_factory = NpmInstallerFactory::new(
     resolver_factory.clone(),
-    rolldown_client,
+    Arc::new(rolldown_client.clone()),
     Arc::new(NullLifecycleScriptsExecutor),
     deno_npm_installer::LogReporter,
     NpmInstallerFactoryOptions {
@@ -230,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       caching_strategy: deno_npm_installer::graph::NpmCachingStrategy::Eager,
       lifecycle_scripts_config: deno_npm_installer::LifecycleScriptsConfig {
         allowed: deno_npm_installer::PackagesAllowedScripts::None,
-        initial_cwd: workspace_factory.initial_cwd().clone(),
+        initial_cwd: cwd.clone(),
         root_dir: workspace_factory.workspace_directory()?.workspace.root_dir_path(),
         explicit_install: false,
       },
@@ -247,14 +169,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let file_fetcher = Arc::new(PermissionedFileFetcher::new(
     NullBlobStore,
     Arc::new(workspace_factory.http_cache()?.clone()),
-    RolldownHttpClient { client: reqwest::Client::new() },
+    rolldown_client,
     sys.clone(),
     PermissionedFileFetcherOptions { allow_remote: true, cache_setting: CacheSetting::Use },
   ));
-  let entrypoint = "jsr:@std/text@1";
-  let roots = Vec::from([Url::parse(entrypoint).unwrap()]);
+  let roots = Vec::from([entrypoint.clone()]);
   let graph_resolver = resolver.as_graph_resolver(cjs_tracker, &jsx_config);
-  let module_analyzer = DefaultModuleAnalyzer::default();
   let loader = DenoGraphLoader::new(
     file_fetcher.clone(),
     workspace_factory.global_http_cache()?.clone(),
@@ -280,7 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         file_system: &sys,
         jsr_url_provider: Default::default(),
         passthrough_jsr_specifiers: false,
-        module_analyzer: &module_analyzer,
+        module_analyzer: &module_analyzer::OxcModuleAnalyzer,
         npm_resolver: Some(npm_resolver.as_ref()),
         reporter: None,
         resolver: Some(&graph_resolver),
@@ -293,11 +213,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let mut bundler = Bundler::with_plugins(
     BundlerOptions {
       input: Some(vec![InputItem {
-        name: Some("text".to_string()),
+        name: Some(
+          // todo: improve lol
+          PathBuf::from(entrypoint.as_str().split('/').last().unwrap().to_string())
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+        ),
         import: entrypoint.to_string(),
       }]),
       entry_filenames: Some(ChunkFilenamesOutputOption::String("[name].bundle.js".to_string())),
-      cwd: Some(workspace::crate_dir("rolldown").join("./examples").normalize()),
+      cwd: Some(cwd.clone()),
       sourcemap: Some(SourceMapType::File),
       ..Default::default()
     },
@@ -313,8 +240,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   };
 
   for asset in result.assets {
-    eprintln!("Emit {:?}", asset.filename());
-    println!("{}", String::from_utf8_lossy(asset.content_as_bytes()));
+    eprintln!("Writing: {}", asset.filename());
+    std::fs::write(cwd.join(asset.filename()), asset.content_as_bytes()).unwrap();
   }
 
   for err in result.warnings {
