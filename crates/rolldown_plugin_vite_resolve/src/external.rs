@@ -5,10 +5,9 @@ use rolldown_utils::{dashmap::FxDashMap, pattern_filter::StringOrRegex};
 use rustc_hash::FxHashSet;
 
 use crate::{
+  builtin::BuiltinChecker,
   resolver::Resolver,
-  utils::{
-    can_externalize_file, get_npm_package_name, is_bare_import, is_builtin, is_in_node_modules,
-  },
+  utils::{can_externalize_file, get_npm_package_name, is_bare_import, is_in_node_modules},
   utils_filter::UtilsFilter,
 };
 
@@ -69,19 +68,24 @@ pub struct ExternalDeciderOptions {
   pub external: ResolveOptionsExternal,
   pub no_external: Arc<ResolveOptionsNoExternal>,
   pub dedupe: Arc<FxHashSet<String>>,
+  pub is_build: bool,
 }
 
 #[derive(Debug)]
 pub struct ExternalDecider {
   options: ExternalDeciderOptions,
-  runtime: String,
   resolver: Arc<Resolver>,
+  builtin_checker: Arc<BuiltinChecker>,
   processed_ids: FxDashMap<String, bool>,
 }
 
 impl ExternalDecider {
-  pub fn new(options: ExternalDeciderOptions, runtime: String, resolver: Arc<Resolver>) -> Self {
-    Self { options, runtime, resolver, processed_ids: DashMap::default() }
+  pub fn new(
+    options: ExternalDeciderOptions,
+    resolver: Arc<Resolver>,
+    builtin_checker: Arc<BuiltinChecker>,
+  ) -> Self {
+    Self { options, resolver, builtin_checker, processed_ids: DashMap::default() }
   }
 
   pub fn is_external(&self, id: &str, importer: Option<&str>) -> bool {
@@ -91,7 +95,8 @@ impl ExternalDecider {
 
     let mut is_external = false;
     if !id.starts_with('.') && !Path::new(id).is_absolute() {
-      is_external = is_builtin(id, &self.runtime) || self.is_configured_as_external(id, importer);
+      is_external =
+        self.builtin_checker.is_builtin(id) || self.is_configured_as_external(id, importer);
     }
     self.processed_ids.insert(id.to_owned(), is_external);
 
@@ -129,6 +134,10 @@ impl ExternalDecider {
     if !is_bare_import(id) || id.contains('\0') {
       return false;
     }
+
+    // Skip passing importer in build to avoid externalizing non-hoisted dependencies
+    // unresolvable from root (which would be unresolvable from output bundles also)
+    let importer = if self.options.is_build { None } else { importer };
 
     let result = self.resolver.resolve_bare_import(id, importer, false, &self.options.dedupe);
     match result {

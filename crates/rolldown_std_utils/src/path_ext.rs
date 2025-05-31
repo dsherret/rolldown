@@ -8,7 +8,7 @@ pub trait PathExt {
   fn representative_file_name(&self) -> Cow<str>;
 }
 
-impl PathExt for std::path::Path {
+impl PathExt for Path {
   fn expect_to_str(&self) -> &str {
     self.to_str().unwrap_or_else(|| {
       panic!("Failed to convert {:?} to valid utf8 str", self.display());
@@ -32,7 +32,7 @@ impl PathExt for std::path::Path {
     let file_name =
       self.file_stem().map_or_else(|| self.to_string_lossy(), |stem| stem.to_string_lossy());
 
-    let file_name = match &*file_name {
+    match &*file_name {
       // "index": Node.js use `index` as a special name for directory import.
       // "mod": https://docs.deno.com/runtime/manual/references/contributing/style_guide#do-not-use-the-filename-indextsindexjs.
       "index" | "mod" => {
@@ -45,9 +45,24 @@ impl PathExt for std::path::Path {
         }
       }
       _ => file_name,
-    };
+    }
+  }
+}
 
-    file_name
+/// The first one is for chunk name, the second element is used for generate absolute file name
+pub fn representative_file_name_for_preserve_modules(path: &Path) -> (Cow<str>, Cow<str>) {
+  let file_name =
+    path.file_stem().map_or_else(|| path.to_string_lossy(), |stem| stem.to_string_lossy());
+  let idx = path.to_string_lossy().rfind(file_name.as_ref()).expect("should contains file_name");
+  let ab_path = slice_cow_str(path.to_string_lossy(), 0, idx + file_name.len());
+  (file_name, ab_path)
+}
+
+#[inline]
+fn slice_cow_str(cow: Cow<str>, start: usize, end: usize) -> Cow<'_, str> {
+  match cow {
+    Cow::Borrowed(s) => Cow::Borrowed(&s[start..end]),
+    Cow::Owned(s) => Cow::Owned(s[start..end].to_string()),
   }
 }
 
@@ -62,4 +77,10 @@ fn test_representative_file_name() {
 
   let path = cwd.join("vue").join("mod.ts");
   assert_eq!(path.representative_file_name(), "vue");
+
+  #[cfg(not(target_os = "windows"))]
+  {
+    let path = cwd.join("src").join("vue.js");
+    assert_eq!(representative_file_name_for_preserve_modules(&path).1, "./project/src/vue");
+  }
 }

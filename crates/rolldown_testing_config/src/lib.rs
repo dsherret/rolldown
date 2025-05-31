@@ -12,6 +12,7 @@ pub struct ConfigVariant {
   pub name: Option<String>,
   pub exports: Option<OutputExports>,
   pub strict_execution_order: Option<bool>,
+  pub entry_filenames: Option<String>,
 }
 
 impl ConfigVariant {
@@ -32,6 +33,9 @@ impl ConfigVariant {
     if let Some(strict_execution_order) = &self.strict_execution_order {
       config.experimental.get_or_insert_default().strict_execution_order =
         Some(*strict_execution_order);
+    }
+    if let Some(entry_filenames) = &self.entry_filenames {
+      config.entry_filenames = Some(entry_filenames.to_string().into());
     }
     config
   }
@@ -104,6 +108,11 @@ pub struct TestMeta {
   /// If `true`, the bundle will be called with `write()` instead of `generate()`.
   #[serde(default = "true_by_default")]
   pub write_to_disk: bool,
+  /// Sometimes, it is cumbersome to handle some windows-specific path issue in tests.
+  /// Usually it is related tests of `preserve_modules`.We can't just replace all `\\` into '/',
+  /// in path, because the Windows format path will also affect the hash, which leads `filename_with_hash.rs` tests failed.
+  #[serde(default = "false_by_default")]
+  pub skip_windows: bool,
 }
 
 impl Default for TestMeta {
@@ -114,4 +123,8 @@ impl Default for TestMeta {
 
 fn true_by_default() -> bool {
   true
+}
+
+fn false_by_default() -> bool {
+  false
 }

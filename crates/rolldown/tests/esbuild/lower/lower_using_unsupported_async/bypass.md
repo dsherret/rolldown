@@ -112,7 +112,6 @@ function bar() {
 ```
 ### rolldown
 ```js
-
 //#region loops.js
 for (using a of b) c(() => a);
 if (nested) for (using a of b) c(() => a);
@@ -124,8 +123,7 @@ if (nested) for (using a of b) c(() => a);
 ===================================================================
 --- esbuild	/out/loops.js
 +++ rolldown	loops.js
-@@ -1,24 +1,6 @@
-+
+@@ -1,24 +1,5 @@
 +//#region loops.js
  for (using a of b) c(() => a);
 -if (nested) {
@@ -196,7 +194,6 @@ function foo() {
 ```
 ### rolldown
 ```js
-
 //#region switch.js
 using x = y;
 switch (foo) {
@@ -206,12 +203,12 @@ switch (foo) {
 async function foo() {
 	using x$1 = y;
 	switch (foo) {
-		case 0: using c$1 = d;
-		default: using e$1 = f;
+		case 0: using c = d;
+		default: using e = f;
 	}
 	switch (foo) {
-		case 0: await using c$1 = d;
-		default: using e$1 = f;
+		case 0: await using c = d;
+		default: using e = f;
 	}
 }
 
@@ -222,8 +219,7 @@ async function foo() {
 ===================================================================
 --- esbuild	/out/switch.js
 +++ rolldown	switch.js
-@@ -1,32 +1,20 @@
-+
+@@ -1,32 +1,19 @@
 +//#region switch.js
  using x = y;
  switch (foo) {
@@ -263,12 +259,12 @@ async function foo() {
 +async function foo() {
 +	using x$1 = y;
 +	switch (foo) {
-+		case 0: using c$1 = d;
-+		default: using e$1 = f;
++		case 0: using c = d;
++		default: using e = f;
 +	}
 +	switch (foo) {
-+		case 0: await using c$1 = d;
-+		default: using e$1 = f;
++		case 0: await using c = d;
++		default: using e = f;
 +	}
 +}
 +

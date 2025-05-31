@@ -1,13 +1,11 @@
 ---
 source: crates/rolldown_testing/src/integration_test.rs
-snapshot_kind: text
 ---
 # Assets
 
 ## main.js
 
 ```js
-
 
 //#region lib.prod.js
 var lib_prod_exports = {};
@@ -22,6 +20,9 @@ var init_lib_prod = __esm({ "lib.prod.js"() {
 var require_lib = __commonJS({ "lib.js"(exports, module) {
 	module.exports = (init_lib_prod(), __toCommonJS(lib_prod_exports));
 } });
+
+//#endregion
+//#region main.js
 var import_lib = __toESM(require_lib());
 
 //#endregion

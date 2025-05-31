@@ -1,23 +1,37 @@
-export { defineParallelPlugin } from './plugin/parallel-plugin'
-export { experimental_scan as scan } from './api/experimental'
-export { transform } from './binding'
-export type { TransformOptions, TransformResult } from './binding'
-export { composeJsPlugins as composePlugins } from './utils/compose-js-plugins'
+export { experimental_scan as scan } from './api/experimental';
+export {
+  isolatedDeclaration,
+  type IsolatedDeclarationsOptions,
+  type IsolatedDeclarationsResult,
+  moduleRunnerTransform,
+  type NapiResolveOptions as ResolveOptions,
+  type ResolveResult,
+  ResolverFactory,
+  transform,
+  type TransformOptions,
+  type TransformResult,
+} from './binding';
+export { defineParallelPlugin } from './plugin/parallel-plugin';
+export { composeJsPlugins as composePlugins } from './utils/compose-js-plugins';
 // Builtin plugin factory
 export {
-  modulePreloadPolyfillPlugin,
-  dynamicImportVarsPlugin,
-  wasmHelperPlugin,
-  wasmFallbackPlugin,
-  importGlobPlugin,
-  manifestPlugin,
-  loadFallbackPlugin,
-  jsonPlugin,
+  assetPlugin,
   buildImportAnalysisPlugin,
-  viteResolvePlugin,
+  dynamicImportVarsPlugin,
+  importGlobPlugin,
+  isolatedDeclarationPlugin,
+  jsonPlugin,
+  loadFallbackPlugin,
+  manifestPlugin,
   moduleFederationPlugin,
-} from './builtin-plugin/constructors'
+  modulePreloadPolyfillPlugin,
+  reporterPlugin,
+  viteResolvePlugin,
+  wasmFallbackPlugin,
+  wasmHelperPlugin,
+  webWorkerPostPlugin,
+} from './builtin-plugin/constructors';
 
-export { transformPlugin } from './builtin-plugin/transform-plugin'
-export { replacePlugin } from './builtin-plugin/replace-plugin'
-export { aliasPlugin } from './builtin-plugin/alias-plugin'
+export { aliasPlugin } from './builtin-plugin/alias-plugin';
+export { replacePlugin } from './builtin-plugin/replace-plugin';
+export { transformPlugin } from './builtin-plugin/transform-plugin';

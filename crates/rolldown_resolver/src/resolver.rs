@@ -13,13 +13,13 @@ use std::{
 use sugar_path::SugarPath;
 
 use oxc_resolver::{
-  EnforceExtension, FsCache, PackageJsonSerde as OxcPackageJson, PackageType, Resolution,
-  ResolveError, ResolveOptions as OxcResolverOptions, ResolverGeneric, TsConfigSerde,
+  EnforceExtension, FsCache, ModuleType, PackageJsonSerde as OxcPackageJson, PackageType,
+  Resolution, ResolveError, ResolveOptions as OxcResolverOptions, ResolverGeneric, TsConfigSerde,
   TsconfigOptions,
 };
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code, clippy::struct_field_names)]
 pub struct Resolver<T: FileSystem + Default = OsFileSystem> {
   cwd: PathBuf,
   default_resolver: ResolverGeneric<FsCache<T>>,
@@ -100,20 +100,19 @@ impl<F: FileSystem + Default> Resolver<F> {
       imports_fields: vec![vec!["imports".to_string()]],
       alias_fields,
       condition_names: default_conditions,
-      description_files: vec!["package.json".to_string()],
       enforce_extension: EnforceExtension::Auto,
       exports_fields: raw_resolve
         .exports_fields
         .unwrap_or_else(|| vec![vec!["exports".to_string()]]),
       extension_alias,
       extensions: raw_resolve.extensions.unwrap_or_else(|| {
-        [".jsx", ".js", ".ts", ".tsx"].into_iter().map(str::to_string).collect()
+        [".tsx", ".ts", ".jsx", ".js", ".json"].into_iter().map(str::to_string).collect()
       }),
       fallback: vec![],
       fully_specified: false,
       main_fields,
       main_files: raw_resolve.main_files.unwrap_or_else(|| vec!["index".to_string()]),
-      modules: raw_resolve.modules.unwrap_or_else(|| vec!["node_modules".to_string()]),
+      modules: vec!["node_modules".into()],
       resolve_to_context: false,
       prefer_relative: false,
       prefer_absolute: false,
@@ -121,6 +120,7 @@ impl<F: FileSystem + Default> Resolver<F> {
       roots: vec![],
       symlinks: raw_resolve.symlinks.unwrap_or(true),
       builtin_modules,
+      module_type: true,
     };
     let resolve_options_with_import_conditions = OxcResolverOptions {
       condition_names: import_conditions,
@@ -180,7 +180,8 @@ impl From<ResolveReturn> for ResolvedId {
       id: resolved_return.path,
       ignored: false,
       module_def_format: resolved_return.module_def_format,
-      is_external: false,
+      external: false.into(),
+      normalize_external_id: None,
       package_json: resolved_return.package_json,
       side_effects: None,
       is_external_without_side_effects: false,
@@ -239,12 +240,12 @@ impl<F: FileSystem + Default> Resolver<F> {
 
     resolution.map(|info| {
       let package_json = info.package_json().map(|p| self.cached_package_json(p));
-      let module_type = infer_module_def_format(&info);
-      build_resolve_ret(
-        info.full_path().to_str().expect("Should be valid utf8").to_string(),
-        module_type,
+      let module_def_format = infer_module_def_format(&info);
+      ResolveReturn {
+        path: info.full_path().to_str().expect("Should be valid utf8").into(),
+        module_def_format,
         package_json,
-      )
+      }
     })
   }
 
@@ -288,24 +289,16 @@ fn infer_module_def_format<F: FileSystem + Default>(
     .path()
     .extension()
     .is_some_and(|ext| matches!(ext.to_str(), Some("js" | "jsx" | "ts" | "tsx")));
-  if let Some(package_json) =
-    is_js_like_extension.then(|| info.package_json()).and_then(|item| item)
-  {
-    return match package_json.r#type {
-      Some(PackageType::CommonJs) => ModuleDefFormat::CjsPackageJson,
-      Some(PackageType::Module) => ModuleDefFormat::EsmPackageJson,
-      _ => ModuleDefFormat::Unknown,
-    };
+  if is_js_like_extension {
+    if let Some(module_type) = info.module_type() {
+      return match module_type {
+        ModuleType::CommonJs => ModuleDefFormat::CjsPackageJson,
+        ModuleType::Module => ModuleDefFormat::EsmPackageJson,
+        ModuleType::Json | ModuleType::Wasm | ModuleType::Addon => ModuleDefFormat::Unknown,
+      };
+    }
   }
   ModuleDefFormat::Unknown
-}
-
-fn build_resolve_ret(
-  path: String,
-  module_type: ModuleDefFormat,
-  package_json: Option<Arc<PackageJson>>,
-) -> ResolveReturn {
-  ResolveReturn { path: path.into(), module_def_format: module_type, package_json }
 }
 
 // Support esbuild's `rewrittenFileExtensions` feature. https://github.com/evanw/esbuild/blob/a08f30db4a475472aa09cd89e2279a822266f6c7/internal/resolver/resolver.go#L1622-L1644

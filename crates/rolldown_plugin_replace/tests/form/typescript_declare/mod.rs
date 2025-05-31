@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rolldown::BundlerOptions;
 
 use rolldown_plugin::{
-  HookTransformArgs, HookTransformReturn, Plugin, SharedTransformPluginContext,
+  HookTransformArgs, HookTransformReturn, HookUsage, Plugin, SharedTransformPluginContext,
 };
 use rolldown_plugin_replace::{ReplaceOptions, ReplacePlugin};
 use rolldown_testing::{abs_file_dir, integration_test::IntegrationTest, test_config::TestMeta};
@@ -17,14 +17,18 @@ impl Plugin for TestPlugin {
     "test-plugin".into()
   }
 
-  fn transform(
+  async fn transform(
     &self,
     _ctx: SharedTransformPluginContext,
     args: &HookTransformArgs<'_>,
-  ) -> impl std::future::Future<Output = HookTransformReturn> + Send {
+  ) -> HookTransformReturn {
     let mut code = self.0.lock().unwrap();
     *code = Some(args.code.clone());
-    async { Ok(None) }
+    Ok(None)
+  }
+
+  fn register_hook_usage(&self) -> HookUsage {
+    HookUsage::Transform
   }
 }
 
@@ -57,6 +61,6 @@ async fn typescript_declare() {
   )
   .await;
 
-  let replaced = "declare const NAME: string\nconsole.log(replaced)\n";
+  let replaced = "declare const NAME: string;\nconsole.log(replaced);\n";
   assert_eq!(*code.lock().unwrap().as_ref().unwrap(), replaced);
 }

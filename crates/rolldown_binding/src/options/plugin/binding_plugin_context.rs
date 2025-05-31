@@ -1,51 +1,32 @@
-use std::sync::Arc;
-
 use napi_derive::napi;
 
-use rolldown_plugin::PluginContext;
+use rolldown_plugin::{PluginContext, SharedNativePluginContext};
 
 use super::types::{
   binding_emitted_asset::BindingEmittedAsset, binding_emitted_chunk::BindingEmittedChunk,
   binding_hook_side_effects::BindingHookSideEffects,
   binding_plugin_context_resolve_options::BindingPluginContextResolveOptions,
+  binding_resolved_external::BindingResolvedExternal,
 };
 
-use crate::{
-  types::{
-    binding_module_info::BindingModuleInfo,
-    js_callback::{JsCallback, JsCallbackExt},
-  },
-  utils::napi_error,
-};
+use crate::{types::binding_module_info::BindingModuleInfo, utils::napi_error};
 
 #[napi]
 pub struct BindingPluginContext {
-  inner: PluginContext,
+  inner: SharedNativePluginContext,
 }
 
 #[napi]
 impl BindingPluginContext {
-  #[napi(
-    ts_args_type = "specifier: string, sideEffects: BindingHookSideEffects | undefined, fn: () => void"
-  )]
+  #[napi(ts_args_type = "specifier: string, sideEffects: BindingHookSideEffects | undefined")]
   pub async fn load(
     &self,
     specifier: String,
     side_effects: Option<BindingHookSideEffects>,
-    load_callback_fn: JsCallback<(), ()>,
   ) -> napi::Result<()> {
     self
       .inner
-      .load(
-        &specifier,
-        side_effects.map(Into::into),
-        Box::new(move || {
-          let load_callback_fn = Arc::clone(&load_callback_fn);
-          Box::pin(
-            async move { load_callback_fn.invoke_async(()).await.map_err(anyhow::Error::from) },
-          )
-        }),
-      )
+      .load(&specifier, side_effects.map(Into::into))
       .await
       .map_err(|program_err| napi_error::load_error(&specifier, program_err))
   }
@@ -69,7 +50,7 @@ impl BindingPluginContext {
       .ok();
     Ok(ret.map(|info| BindingPluginContextResolvedId {
       id: info.id.to_string(),
-      external: info.is_external,
+      external: info.external.into(),
     }))
   }
 
@@ -112,12 +93,16 @@ impl BindingPluginContext {
 }
 
 impl From<PluginContext> for BindingPluginContext {
-  fn from(inner: PluginContext) -> Self {
-    Self { inner }
+  fn from(ctx: PluginContext) -> Self {
+    match ctx {
+      PluginContext::Napi(_) => unreachable!("Js plugins don't have PluginContext::Napi"),
+      PluginContext::Native(inner) => Self { inner },
+    }
   }
 }
 #[napi(object)]
 pub struct BindingPluginContextResolvedId {
   pub id: String,
-  pub external: bool,
+  #[napi(ts_type = "boolean | 'absolute' | 'relative'")]
+  pub external: BindingResolvedExternal,
 }

@@ -1,14 +1,18 @@
-mod binding_checks_options;
+mod binding_debug_options;
 mod binding_defer_sync_scan_data;
 mod binding_experimental_options;
-pub mod binding_inject_import;
 mod binding_input_item;
-mod binding_jsx;
+mod binding_make_absolute_externals_relative;
 mod binding_resolve_options;
 mod binding_treeshake;
 mod binding_watch_option;
 
+pub mod binding_inject_import;
+pub mod binding_jsx;
+
+use binding_debug_options::BindingDebugOptions;
 use binding_defer_sync_scan_data::BindingDeferSyncScanDataOption;
+use binding_make_absolute_externals_relative::BindingMakeAbsoluteExternalsRelative;
 use derive_more::Debug;
 use napi::bindgen_prelude::FnArgs;
 use napi_derive::napi;
@@ -22,6 +26,7 @@ use binding_resolve_options::BindingResolveOptions;
 use binding_watch_option::BindingWatchOption;
 
 use super::plugin::BindingPluginOrParallelJsPluginPlaceholder;
+use crate::generated::binding_checks_options;
 use crate::types::{
   binding_log::BindingLog, binding_log_level::BindingLogLevel, js_callback::JsCallback,
 };
@@ -30,7 +35,7 @@ pub type BindingOnLog = Option<JsCallback<FnArgs<(String, BindingLog)>, ()>>;
 
 #[napi(object, object_to_js = false)]
 #[derive(Default, Debug)]
-pub struct BindingInputOptions {
+pub struct BindingInputOptions<'env> {
   // Not going to be supported
   // @deprecated Use the "inlineDynamicImports" output option instead.
   // inlineDynamicImports?: boolean;
@@ -56,7 +61,7 @@ pub struct BindingInputOptions {
   // onwarn?: WarningHandlerWithDefault;
   // perf?: boolean;
   #[napi(ts_type = "(BindingBuiltinPlugin | BindingPluginOptions | undefined)[]")]
-  pub plugins: Vec<BindingPluginOrParallelJsPluginPlaceholder>,
+  pub plugins: Vec<BindingPluginOrParallelJsPluginPlaceholder<'env>>,
   pub resolve: Option<BindingResolveOptions>,
   // preserveEntrySignatures?: PreserveEntrySignaturesOption;
   // /** @deprecated Use the "preserveModules" output option instead. */
@@ -64,7 +69,6 @@ pub struct BindingInputOptions {
   // pub preserve_symlinks: bool,
   pub shim_missing_exports: Option<bool>,
   // strictDeprecations?: boolean;
-  // pub treeshake: Option<bool>,
   #[napi(ts_type = "'node' | 'browser' | 'neutral'")]
   pub platform: Option<String>,
   pub log_level: BindingLogLevel,
@@ -85,10 +89,21 @@ pub struct BindingInputOptions {
   pub profiler_names: Option<bool>,
   #[debug(skip)]
   pub jsx: Option<BindingJsx>,
+  #[debug(skip)]
+  pub transform: Option<oxc_transform_napi::TransformOptions>,
   pub watch: Option<BindingWatchOption>,
   pub keep_names: Option<bool>,
   pub checks: Option<binding_checks_options::BindingChecksOptions>,
   #[debug(skip)]
   #[napi(ts_type = "undefined | (() => BindingDeferSyncScanData[])")]
   pub defer_sync_scan_data: Option<BindingDeferSyncScanDataOption>,
+  pub make_absolute_externals_relative: Option<BindingMakeAbsoluteExternalsRelative>,
+  pub debug: Option<BindingDebugOptions>,
+  #[debug(skip)]
+  #[napi(ts_type = "() => void")]
+  // TODO: The `FnArgs<()>` is not supported.
+  pub invalidate_js_side_cache: Option<JsCallback<FnArgs<(Option<bool>,)>, ()>>,
+  #[debug(skip)]
+  #[napi(ts_type = "(id: string, success: boolean) => void")]
+  pub mark_module_loaded: Option<JsCallback<FnArgs<(String, bool)>, ()>>,
 }

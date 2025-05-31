@@ -1,13 +1,11 @@
 ---
 source: crates/rolldown_testing/src/integration_test.rs
-snapshot_kind: text
 ---
 # Assets
 
 ## entry.js
 
 ```js
-
 //#region foo.js
 var foo_default = { bar: 123 };
 
@@ -26,7 +24,6 @@ Variant: (format: Cjs)
 ## entry.js
 
 ```js
-"use strict";
 
 //#region foo.js
 var foo_default = { bar: 123 };
@@ -48,7 +45,6 @@ Variant: (format: Iife)
 ```js
 (function() {
 
-"use strict";
 
 //#region foo.js
 var foo_default = { bar: 123 };
@@ -74,7 +70,6 @@ Variant: (format: Umd)
   typeof define === 'function' && define.amd ? define([], factory) :
   factory();
 })(function() {
-"use strict";
 
 //#region foo.js
 var foo_default = { bar: 123 };

@@ -1,6 +1,6 @@
-import { transformPlugin } from 'rolldown/experimental'
-import { defineTest } from 'rolldown-tests'
 import { expect } from 'vitest'
+import { defineTest } from 'rolldown-tests'
+import { transformPlugin } from 'rolldown/experimental'
 
 let transformed: string[] = []
 export default defineTest({
@@ -8,7 +8,7 @@ export default defineTest({
     input: './main.ts',
     plugins: [
       transformPlugin({
-        exclude: ['node_modules/**'],
+        exclude: ['**/node_modules/**'],
       }),
       {
         name: 'test',
@@ -22,9 +22,6 @@ export default defineTest({
     ],
   },
   async afterTest() {
-    expect(transformed.filter((id) => id.includes('node_modules')).length).toBe(
-      0,
-    )
-    transformed = []
+    expect(transformed.splice(0).filter((id) => id.includes('node_modules')).length).toBe(0)
   },
 })

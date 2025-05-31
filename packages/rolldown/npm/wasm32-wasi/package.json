@@ -1,6 +1,6 @@
 {
   "name": "@rolldown/binding-wasm32-wasi",
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0-beta.10",
   "cpu": [
     "wasm32"
   ],
@@ -36,7 +36,5 @@
     "directory": "packages/rolldown"
   },
   "browser": "rolldown-binding.wasi-browser.js",
-  "dependencies": {
-    "@napi-rs/wasm-runtime": "^0.2.4"
-  }
+  "dependencies": {}
 }

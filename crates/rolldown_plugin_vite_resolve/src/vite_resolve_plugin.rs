@@ -8,33 +8,36 @@ use std::{
 };
 
 use crate::{
-  CallablePlugin, ResolveOptionsExternal,
+  ResolveOptionsExternal,
+  builtin::{BuiltinChecker, is_node_like_builtin},
   external::{self, ExternalDecider, ExternalDeciderOptions},
-  file_url::file_url_str_to_path,
+  file_url::file_url_str_to_path_and_postfix,
   resolver::{self, AdditionalOptions, Resolvers},
   utils::{
-    BROWSER_EXTERNAL_ID, OPTIONAL_PEER_DEP_ID, clean_url, is_bare_import, is_builtin,
-    is_in_node_modules, is_windows_drive_path, normalize_path,
+    BROWSER_EXTERNAL_ID, OPTIONAL_PEER_DEP_ID, is_bare_import, is_in_node_modules,
+    is_windows_drive_path, normalize_path,
   },
 };
 use anyhow::anyhow;
+use arcstr::ArcStr;
 use derive_more::Debug;
 use rolldown_common::{ImportKind, WatcherChangeKind, side_effects::HookSideEffects};
 use rolldown_plugin::{
-  HookLoadArgs, HookLoadOutput, HookLoadReturn, HookNoopReturn, HookResolveIdArgs,
-  HookResolveIdOutput, HookResolveIdReturn, Plugin, PluginContext, typedmap::TypedMapKey,
+  HookLoadArgs, HookLoadOutput, HookLoadReturn, HookResolveIdArgs, HookResolveIdOutput,
+  HookResolveIdReturn, HookUsage, Plugin, PluginContext, typedmap::TypedMapKey,
 };
+use rolldown_utils::pattern_filter::StringOrRegex;
 use rustc_hash::FxHashSet;
 use sugar_path::SugarPath;
 
 const FS_PREFIX: &str = "/@fs/";
-const TS_EXTENSIONS: &[&str] = &[".ts", ".mts", ".cts", ".tsx"];
 
 #[derive(Debug)]
 pub struct ViteResolveOptions {
   pub resolve_options: ViteResolveResolveOptions,
   pub environment_consumer: String,
   pub environment_name: String,
+  pub builtins: Vec<StringOrRegex>,
   pub external: external::ResolveOptionsExternal,
   pub no_external: external::ResolveOptionsNoExternal,
   pub dedupe: Vec<String>,
@@ -42,8 +45,6 @@ pub struct ViteResolveOptions {
   pub finalize_bare_specifier: Option<Arc<FinalizeBareSpecifierCallback>>,
   #[debug(skip)]
   pub finalize_other_specifiers: Option<Arc<FinalizeOtherSpecifiersCallback>>,
-
-  pub runtime: String,
 }
 pub type FinalizeBareSpecifierCallback = dyn (Fn(
     &str,
@@ -96,10 +97,9 @@ pub struct ViteResolvePlugin {
   #[debug(skip)]
   finalize_other_specifiers: Option<Arc<FinalizeOtherSpecifiersCallback>>,
 
-  runtime: String,
-
   resolvers: Resolvers,
   external_decider: ExternalDecider,
+  builtin_checker: Arc<BuiltinChecker>,
 }
 
 impl ViteResolvePlugin {
@@ -115,10 +115,11 @@ impl ViteResolvePlugin {
       root: &options.resolve_options.root,
       preserve_symlinks: options.resolve_options.preserve_symlinks,
     };
+    let builtin_checker = Arc::new(BuiltinChecker::new(options.builtins));
     let resolvers = Resolvers::new(
       &base_options,
       &options.resolve_options.external_conditions,
-      options.runtime.clone(),
+      Arc::clone(&builtin_checker),
     );
     let no_external = Arc::new(options.no_external);
     let dedupe = Arc::new(options.dedupe.into_iter().collect());
@@ -131,27 +132,34 @@ impl ViteResolvePlugin {
       environment_name: options.environment_name,
       finalize_bare_specifier: options.finalize_bare_specifier,
       finalize_other_specifiers: options.finalize_other_specifiers,
-      runtime: options.runtime.clone(),
       external_decider: ExternalDecider::new(
         ExternalDeciderOptions {
           external: options.external,
           no_external: Arc::clone(&no_external),
           dedupe,
+          is_build: options.resolve_options.is_build,
         },
-        options.runtime,
         resolvers.get_for_external(),
+        Arc::clone(&builtin_checker),
       ),
+      builtin_checker,
 
       resolvers,
       resolve_options: options.resolve_options,
     }
   }
+}
 
-  fn name_internal(&self) -> &'static str {
-    "rolldown:vite-resolve"
+impl Plugin for ViteResolvePlugin {
+  fn name(&self) -> Cow<'static, str> {
+    Cow::Borrowed("rolldown:vite-resolve")
   }
 
-  async fn resolve_id_internal(&self, args: &HookResolveIdArgs<'_>) -> HookResolveIdReturn {
+  async fn resolve_id(
+    &self,
+    _ctx: &PluginContext,
+    args: &HookResolveIdArgs<'_>,
+  ) -> HookResolveIdReturn {
     let scan =
       args.custom.get(&ResolveIdOptionsScan {}).is_some_and(|v| *v) || self.resolve_options.scan;
 
@@ -183,8 +191,8 @@ impl ViteResolvePlugin {
 
     // file url as path
     if args.specifier.starts_with("file://") {
-      let path = file_url_str_to_path(args.specifier)?;
-      let mut res = normalize_path(&path).into_owned();
+      let (path, postfix) = file_url_str_to_path_and_postfix(args.specifier)?;
+      let mut res = normalize_path(&path).into_owned() + &postfix;
       if let Some(finalize_other_specifiers) = &self.finalize_other_specifiers {
         if let Some(finalized) = finalize_other_specifiers(&res, args.specifier).await? {
           res = finalized;
@@ -201,7 +209,7 @@ impl ViteResolvePlugin {
     if is_external_url(args.specifier) {
       return Ok(Some(HookResolveIdOutput {
         id: args.specifier.into(),
-        external: Some(true),
+        external: Some(true.into()),
         ..Default::default()
       }));
     }
@@ -209,7 +217,6 @@ impl ViteResolvePlugin {
     let additional_options = AdditionalOptions::new(
       self.resolve_options.is_require.unwrap_or(args.kind == ImportKind::Require),
       self.resolve_options.prefer_relative || args.importer.is_some_and(|i| i.ends_with(".html")),
-      is_from_ts_importer(args.importer),
     );
     let resolver = self.resolvers.get(additional_options);
 
@@ -233,61 +240,84 @@ impl ViteResolvePlugin {
         return Ok(Some(result));
       }
 
-      if is_builtin(args.specifier, &self.runtime) {
-        if self.environment_consumer == "server" {
-          if self.no_external.is_true()
-              // if both noExternal and external are true, noExternal will take the higher priority and bundle it.
-              // only if the id is explicitly listed in external, we will externalize it and skip this error.
-              &&(matches!(self.external, ResolveOptionsExternal::True)
-              || !self.external.is_external_explicitly(args.specifier))
-          {
-            let mut message = format!("Cannot bundle Node.js built-in \"{}\"", args.specifier);
-            if let Some(importer) = args.importer {
-              let current_dir =
-                env::current_dir().unwrap_or(PathBuf::from(&self.resolve_options.root));
-              message.push_str(&format!(
-                " imported from \"{}\"",
-                Path::new(importer).relative(current_dir).to_string_lossy()
-              ));
-            }
-            message.push_str(&format!(
-              ". Consider disabling environments.{}.noExternal or remove the built-in dependency.",
-              self.environment_name
-            ));
-            return Err(anyhow!(message));
-          }
-
-          return Ok(Some(HookResolveIdOutput {
-            id: args.specifier.into(),
-            external: Some(true),
-            side_effects: Some(HookSideEffects::False),
-          }));
-        } else {
-          if !self.resolve_options.as_src {
-            // TODO(sapphi-red): debug log
-          } else if self.resolve_options.is_production {
-            // TODO(sapphi-red): warn log
-          }
-          return Ok(Some(HookResolveIdOutput {
-            id: if self.resolve_options.is_production {
-              arcstr::literal!(BROWSER_EXTERNAL_ID)
-            } else {
-              format!("{BROWSER_EXTERNAL_ID}:{}", args.specifier).into()
-            },
-            ..Default::default()
-          }));
+      // built-ins
+      // externalize if building for a server environment, otherwise redirect to an empty module
+      if self.environment_consumer == "server" && self.builtin_checker.is_builtin(args.specifier) {
+        return Ok(Some(HookResolveIdOutput {
+          id: args.specifier.into(),
+          external: Some(true.into()),
+          side_effects: Some(HookSideEffects::False),
+          ..Default::default()
+        }));
+      } else if self.environment_consumer == "server" && is_node_like_builtin(args.specifier) {
+        if !(matches!(self.external, ResolveOptionsExternal::True)
+          || self.external.is_external_explicitly(args.specifier))
+        {
+          // TODO(sapphi-red): warn log
+          // let mut message =
+          //   format!("Automatically externalized node built-in module \"{}\"", &args.specifier);
+          // if let Some(importer) = args.importer {
+          //   let current_dir =
+          //     env::current_dir().unwrap_or(PathBuf::from(&self.resolve_options.root));
+          //   message.push_str(&format!(
+          //     " imported from \"{}\"",
+          //     Path::new(importer).relative(current_dir).to_string_lossy()
+          //   ));
+          // }
+          // message.push_str(&format!(
+          //   ". Consider adding it to environments.{}.external if it is intended.",
+          //   self.environment_name
+          // ));
         }
-      }
-    }
 
-    // skip for now: https://github.com/oxc-project/oxc-resolver/pull/310
-    if clean_url(args.specifier) == "/" {
-      return Ok(None);
+        return Ok(Some(HookResolveIdOutput {
+          id: args.specifier.into(),
+          external: Some(true.into()),
+          side_effects: Some(HookSideEffects::False),
+          ..Default::default()
+        }));
+      } else if self.environment_consumer == "client" && is_node_like_builtin(args.specifier) {
+        if self.no_external.is_true()
+            // if both noExternal and external are true, noExternal will take the higher priority and bundle it.
+            // only if the id is explicitly listed in external, we will externalize it and skip this error.
+            &&(matches!(self.external, ResolveOptionsExternal::True)
+            || !self.external.is_external_explicitly(args.specifier))
+        {
+          let mut message = format!("Cannot bundle Node.js built-in \"{}\"", args.specifier);
+          if let Some(importer) = args.importer {
+            let current_dir =
+              env::current_dir().unwrap_or(PathBuf::from(&self.resolve_options.root));
+            message.push_str(&format!(
+              " imported from \"{}\"",
+              Path::new(importer).relative(current_dir).to_string_lossy()
+            ));
+          }
+          message.push_str(&format!(
+            ". Consider disabling environments.{}.noExternal or remove the built-in dependency.",
+            self.environment_name
+          ));
+          return Err(anyhow!(message));
+        }
+
+        if !self.resolve_options.as_src {
+          // TODO(sapphi-red): debug log
+        } else if self.resolve_options.is_production {
+          // TODO(sapphi-red): warn log
+        }
+        return Ok(Some(HookResolveIdOutput {
+          id: if self.resolve_options.is_production {
+            arcstr::literal!(BROWSER_EXTERNAL_ID)
+          } else {
+            format!("{BROWSER_EXTERNAL_ID}:{}", args.specifier).into()
+          },
+          ..Default::default()
+        }));
+      }
     }
 
     let base_dir = args
       .importer
-      .map(|i| Path::new(i).parent().map(|i| i.to_str().unwrap()).unwrap_or(i))
+      .map(|i| Path::new(i).parent().and_then(|p| p.to_str()).unwrap_or(i))
       .unwrap_or(&self.resolve_options.root);
     let resolved = resolver.normalize_oxc_resolver_result(
       args.importer,
@@ -308,14 +338,14 @@ impl ViteResolvePlugin {
     Ok(None)
   }
 
-  async fn load_internal(&self, args: &HookLoadArgs<'_>) -> HookLoadReturn {
+  async fn load(&self, _ctx: &PluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
     if let Some(id_without_prefix) = args.id.strip_prefix(BROWSER_EXTERNAL_ID) {
       if self.resolve_options.is_build {
         if self.resolve_options.is_production {
           // rolldown treats missing export as an error, and will break build.
           // So use cjs to avoid it.
           return Ok(Some(HookLoadOutput {
-            code: "module.exports = {}".to_string(),
+            code: arcstr::literal!("module.exports = {}"),
             ..Default::default()
           }));
         } else {
@@ -334,7 +364,7 @@ impl ViteResolvePlugin {
       } else if self.resolve_options.is_production {
         // in dev, needs to return esm
         return Ok(Some(HookLoadOutput {
-          code: "export default {}".to_string(),
+          code: arcstr::literal!("export default {}"),
           ..Default::default()
         }));
       } else {
@@ -351,13 +381,14 @@ impl ViteResolvePlugin {
     if args.id.starts_with(OPTIONAL_PEER_DEP_ID) {
       if self.resolve_options.is_production {
         return Ok(Some(HookLoadOutput {
-          code: "export default {}".to_string(),
+          code: arcstr::literal!("export default {}"),
           ..Default::default()
         }));
       } else {
         let [_, peer_dep, parent_dep, _] = args.id.splitn(4, ":").collect::<Vec<&str>>()[..] else {
           unreachable!()
         };
+
         return Ok(Some(HookLoadOutput {
           code: get_development_optional_peer_dep_module_code(peer_dep, parent_dep),
           ..Default::default()
@@ -368,7 +399,12 @@ impl ViteResolvePlugin {
     Ok(None)
   }
 
-  fn watch_change_internal(&self, _path: &str, event: WatcherChangeKind) -> HookNoopReturn {
+  async fn watch_change(
+    &self,
+    _ctx: &PluginContext,
+    _path: &str,
+    event: WatcherChangeKind,
+  ) -> rolldown_plugin::HookNoopReturn {
     // TODO(sapphi-red): we need to avoid using cache for files not watched by vite or rollup
     // https://github.com/vitejs/vite/issues/17760
     match event {
@@ -379,56 +415,15 @@ impl ViteResolvePlugin {
     };
     Ok(())
   }
-}
 
-impl CallablePlugin for ViteResolvePlugin {
-  fn name(&self) -> Cow<'static, str> {
-    self.name_internal().into()
-  }
-
-  async fn resolve_id(&self, args: &HookResolveIdArgs<'_>) -> HookResolveIdReturn {
-    self.resolve_id_internal(args).await
-  }
-
-  async fn load(&self, args: &HookLoadArgs<'_>) -> HookLoadReturn {
-    self.load_internal(args).await
-  }
-
-  async fn watch_change(&self, path: &str, event: WatcherChangeKind) -> HookNoopReturn {
-    self.watch_change_internal(path, event)
-  }
-}
-
-impl Plugin for ViteResolvePlugin {
-  fn name(&self) -> Cow<'static, str> {
-    self.name_internal().into()
-  }
-
-  async fn resolve_id(
-    &self,
-    _ctx: &PluginContext,
-    args: &HookResolveIdArgs<'_>,
-  ) -> HookResolveIdReturn {
-    self.resolve_id_internal(args).await
-  }
-
-  async fn load(&self, _ctx: &PluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
-    self.load_internal(args).await
-  }
-
-  async fn watch_change(
-    &self,
-    _ctx: &PluginContext,
-    path: &str,
-    event: WatcherChangeKind,
-  ) -> rolldown_plugin::HookNoopReturn {
-    self.watch_change_internal(path, event)
+  fn register_hook_usage(&self) -> HookUsage {
+    HookUsage::ResolveId | HookUsage::Load | HookUsage::WatchChange
   }
 }
 
 // rolldown uses esbuild interop helper, so copy the proxy module from https://github.com/vitejs/vite/blob/main/packages/vite/src/node/optimizer/esbuildDepPlugin.ts#L259
-fn get_development_build_browser_external_module_code(id_without_prefix: &str) -> String {
-  format!(
+fn get_development_build_browser_external_module_code(id_without_prefix: &str) -> ArcStr {
+  arcstr::format!(
     "\
 module.exports = Object.create(new Proxy({{}}, {{
   get(_, key) {{
@@ -445,8 +440,8 @@ module.exports = Object.create(new Proxy({{}}, {{
     "
   )
 }
-fn get_development_dev_browser_external_module_code(id_without_prefix: &str) -> String {
-  format!(
+fn get_development_dev_browser_external_module_code(id_without_prefix: &str) -> ArcStr {
+  arcstr::format!(
     "\
 export default new Proxy({{}}, {{
   get(_, key) {{
@@ -456,8 +451,8 @@ export default new Proxy({{}}, {{
     "
   )
 }
-fn get_development_optional_peer_dep_module_code(peer_dep: &str, parent_dep: &str) -> String {
-  format!(
+fn get_development_optional_peer_dep_module_code(peer_dep: &str, parent_dep: &str) -> ArcStr {
+  arcstr::format!(
     "\
 throw new Error(`Could not resolve \"{peer_dep}\" imported by \"{parent_dep}\". Is it installed?`)\
     "
@@ -480,28 +475,6 @@ fn is_external_url(id: &str) -> bool {
       let protocol = &id[0..double_slash_pos];
       protocol.strip_suffix(':').map(|p| p.bytes().all(|c| c.is_ascii_alphabetic())).is_some()
     }
-  } else {
-    false
-  }
-}
-
-fn is_from_ts_importer(importer: Option<&str>) -> bool {
-  if let Some(importer) = importer {
-    // TODO(sapphi-red): support depScan, moduleMeta
-    // https://github.com/vitejs/vite/blob/58f1df3288b0f9584bb413dd34b8d65671258f6f/packages/vite/src/node/plugins/resolve.ts#L240-L248
-    has_suffix(importer, TS_EXTENSIONS)
-  } else {
-    false
-  }
-}
-
-fn has_suffix(s: &str, suffix: &[&str]) -> bool {
-  if suffix.iter().any(|suffix| s.ends_with(suffix)) {
-    return true;
-  }
-
-  if let Some((s, _)) = s.split_once('?') {
-    suffix.iter().any(|suffix| s.ends_with(suffix))
   } else {
     false
   }

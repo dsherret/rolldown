@@ -1,6 +1,5 @@
 ---
 source: crates/rolldown_testing/src/integration_test.rs
-snapshot_kind: text
 ---
 # Assets
 
@@ -14,13 +13,12 @@ menu { color: red }
 ## test.js
 
 ```js
-
 //#region node_modules/pkg/button.js
 let Button;
 
 //#endregion
 //#region test.jsx
-render(React.createElement(Button, null));
+render(/* @__PURE__ */ React.createElement(Button, null));
 
 //#endregion
 ```

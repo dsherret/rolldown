@@ -179,7 +179,6 @@ function bar() {
 ```
 ### rolldown
 ```js
-
 //#region loops.js
 for (using a of b) c(() => a);
 if (nested) for (using a of b) c(() => a);
@@ -191,7 +190,7 @@ if (nested) for (using a of b) c(() => a);
 ===================================================================
 --- esbuild	/out/loops.js
 +++ rolldown	loops.js
-@@ -1,64 +1,6 @@
+@@ -1,64 +1,5 @@
 -for (var _a of b) {
 -    var _stack = [];
 -    try {
@@ -256,7 +255,6 @@ if (nested) for (using a of b) c(() => a);
 -        }
 -    });
 -}
-+
 +//#region loops.js
 +for (using a of b) c(() => a);
 +if (nested) for (using a of b) c(() => a);
@@ -331,7 +329,6 @@ try {
 ```
 ### rolldown
 ```js
-
 //#region switch.js
 using x = y;
 switch (foo) {
@@ -341,12 +338,12 @@ switch (foo) {
 async function foo() {
 	using x$1 = y;
 	switch (foo) {
-		case 0: using c$1 = d;
-		default: using e$1 = f;
+		case 0: using c = d;
+		default: using e = f;
 	}
 	switch (foo) {
-		case 0: await using c$1 = d;
-		default: using e$1 = f;
+		case 0: await using c = d;
+		default: using e = f;
 	}
 }
 
@@ -357,7 +354,7 @@ async function foo() {
 ===================================================================
 --- esbuild	/out/switch.js
 +++ rolldown	switch.js
-@@ -1,60 +1,20 @@
+@@ -1,60 +1,19 @@
 -function foo() {
 -    return __async(this, null, function* () {
 -        var _stack5 = [];
@@ -396,7 +393,6 @@ async function foo() {
 -            __callDispose(_stack5, _error5, _hasError5);
 -        }
 -    });
-+
 +//#region switch.js
 +using x = y;
 +switch (foo) {
@@ -426,12 +422,12 @@ async function foo() {
 +async function foo() {
 +	using x$1 = y;
 +	switch (foo) {
-+		case 0: using c$1 = d;
-+		default: using e$1 = f;
++		case 0: using c = d;
++		default: using e = f;
 +	}
 +	switch (foo) {
-+		case 0: await using c$1 = d;
-+		default: using e$1 = f;
++		case 0: await using c = d;
++		default: using e = f;
 +	}
  }
 +

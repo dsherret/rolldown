@@ -1,7 +1,7 @@
-use oxc::ast_visit::VisitMut;
+use oxc::{allocator::TakeIn, ast_visit::VisitMut};
 use rolldown_common::AstScopes;
 use rolldown_ecmascript::EcmaAst;
-use rolldown_ecmascript_utils::{AstSnippet, TakeIn};
+use rolldown_ecmascript_utils::AstSnippet;
 use rustc_hash::FxHashSet;
 
 use super::module_finalizers::scope_hoisting::{
@@ -16,6 +16,7 @@ pub mod load_source;
 pub mod normalize_options;
 pub mod parse_to_ecma_ast;
 pub mod pre_process_ecma_ast;
+pub mod process_code_and_sourcemap;
 pub mod renamer;
 pub mod render_chunks;
 pub mod render_ecma_module;

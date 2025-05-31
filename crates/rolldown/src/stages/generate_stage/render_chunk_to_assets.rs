@@ -1,19 +1,18 @@
-use std::{ops::Deref, path::Path};
+use std::ops::Deref;
 
 use futures::future::try_join_all;
 use oxc_index::{IndexVec, index_vec};
 use rolldown_common::{
   Asset, EmittedChunkInfo, InstantiationKind, ModuleRenderArgs, ModuleRenderOutput, Output,
-  OutputAsset, OutputChunk, SharedFileEmitter, SourceMapType,
+  OutputAsset, OutputChunk, SharedFileEmitter, SourceMapType, SymbolRef,
 };
 use rolldown_error::{BuildDiagnostic, BuildResult};
-use rolldown_sourcemap::SourceMap;
+use rolldown_rstr::Rstr;
 use rolldown_utils::{
   concat_string,
-  indexmap::FxIndexSet,
+  indexmap::{FxIndexMap, FxIndexSet},
   rayon::{IntoParallelRefIterator, ParallelIterator},
 };
-use sugar_path::SugarPath;
 
 use crate::{
   BundleOutput,
@@ -24,8 +23,10 @@ use crate::{
   type_alias::{IndexAssets, IndexChunkToAssets, IndexInstantiatedChunks},
   types::generator::{GenerateContext, Generator},
   utils::{
-    augment_chunk_hash::augment_chunk_hash, chunk::finalize_chunks::finalize_assets,
-    render_chunks::render_chunks, uuid::uuid_v4_string_from_u128,
+    augment_chunk_hash::augment_chunk_hash,
+    chunk::{finalize_chunks::finalize_assets, render_chunk_exports::get_export_items},
+    process_code_and_sourcemap::process_code_and_sourcemap,
+    render_chunks::render_chunks,
   },
 };
 
@@ -48,6 +49,7 @@ impl GenerateStage<'_> {
 
     let mut assets = finalize_assets(
       chunk_graph,
+      self.link_output,
       instantiated_chunks,
       &index_chunk_to_assets,
       self.options.hash_characters,
@@ -75,36 +77,39 @@ impl GenerateStage<'_> {
           let mut code = code.try_into_string()?;
           let rendered_chunk = ecma_meta.rendered_chunk;
           if let Some(map) = map.as_mut() {
-            self
-              .process_code_and_sourcemap(
-                &mut code,
-                map,
-                &mut output_assets,
-                &file_dir,
-                rendered_chunk.filename.as_str(),
-                rendered_chunk.debug_id,
-              )
-              .await?;
+            if let Some(sourcemap_asset) = process_code_and_sourcemap(
+              self.options,
+              &mut code,
+              map,
+              &file_dir,
+              filename.as_str(),
+              ecma_meta.debug_id,
+              /*is_css*/ false,
+            )
+            .await?
+            {
+              output_assets.push(Output::Asset(Box::new(sourcemap_asset)));
+            }
           }
 
           let sourcemap_filename =
             if matches!(self.options.sourcemap, Some(SourceMapType::Inline) | None) {
               None
             } else {
-              Some(concat_string!(rendered_chunk.filename, ".map"))
+              Some(concat_string!(filename, ".map"))
             };
           output.push(Output::Chunk(Box::new(OutputChunk {
-            name: rendered_chunk.name,
-            filename: rendered_chunk.filename,
+            name: rendered_chunk.name.clone(),
+            filename: filename.clone(),
             code,
             is_entry: rendered_chunk.is_entry,
             is_dynamic_entry: rendered_chunk.is_dynamic_entry,
-            facade_module_id: rendered_chunk.facade_module_id,
-            modules: rendered_chunk.modules,
-            exports: rendered_chunk.exports,
-            module_ids: rendered_chunk.module_ids,
-            imports: rendered_chunk.imports,
-            dynamic_imports: rendered_chunk.dynamic_imports,
+            facade_module_id: rendered_chunk.facade_module_id.clone(),
+            modules: rendered_chunk.modules.clone(),
+            exports: rendered_chunk.exports.clone(),
+            module_ids: rendered_chunk.module_ids.clone(),
+            imports: ecma_meta.imports,
+            dynamic_imports: ecma_meta.dynamic_imports,
             map,
             sourcemap_filename,
             preliminary_filename: preliminary_filename.to_string(),
@@ -113,16 +118,19 @@ impl GenerateStage<'_> {
         InstantiationKind::Css(css_meta) => {
           let mut code = code.try_into_string()?;
           if let Some(map) = map.as_mut() {
-            self
-              .process_code_and_sourcemap(
-                &mut code,
-                map,
-                &mut output_assets,
-                &file_dir,
-                css_meta.filename.as_str(),
-                css_meta.debug_id,
-              )
-              .await?;
+            if let Some(sourcemap_asset) = process_code_and_sourcemap(
+              self.options,
+              &mut code,
+              map,
+              &file_dir,
+              filename.as_str(),
+              css_meta.debug_id,
+              /*is_css*/ true,
+            )
+            .await?
+            {
+              output_assets.push(Output::Asset(Box::new(sourcemap_asset)));
+            }
           }
 
           output.push(Output::Asset(Box::new(OutputAsset {
@@ -163,11 +171,7 @@ impl GenerateStage<'_> {
       return Err(errors.into());
     }
 
-    Ok(BundleOutput {
-      assets: output,
-      warnings,
-      watch_files: self.plugin_driver.watch_files.iter().map(|f| f.clone()).collect(),
-    })
+    Ok(BundleOutput { assets: output, warnings })
   }
 
   async fn instantiate_chunks(
@@ -181,14 +185,22 @@ impl GenerateStage<'_> {
     let mut index_preliminary_assets: IndexInstantiatedChunks =
       IndexVec::with_capacity(chunk_graph.chunk_table.len());
     let chunk_index_to_codegen_rets = self.create_chunk_to_codegen_ret_map(chunk_graph);
+    let render_export_items_index_vec = &chunk_graph
+      .chunk_table
+      .chunks
+      .iter()
+      .map(|item| {
+        let mut map: FxIndexMap<SymbolRef, Vec<Rstr>> = FxIndexMap::default();
+        get_export_items(item, self.link_output, self.options).into_iter().for_each(|(k, v)| {
+          map.entry(v).or_default().push(k);
+        });
+        map
+      })
+      .collect();
 
     try_join_all(
-      chunk_graph
-        .chunk_table
-        .iter_enumerated()
-        .filter(|(_, chunk)| chunk.is_alive)
-        .zip(chunk_index_to_codegen_rets.into_iter())
-        .map(|((chunk_idx, chunk), module_id_to_codegen_ret)| async move {
+      chunk_graph.chunk_table.iter_enumerated().zip(chunk_index_to_codegen_rets.into_iter()).map(
+        |((chunk_idx, chunk), module_id_to_codegen_ret)| async move {
           let mut ctx = GenerateContext {
             chunk_idx,
             chunk,
@@ -198,6 +210,7 @@ impl GenerateStage<'_> {
             plugin_driver: self.plugin_driver,
             warnings: vec![],
             module_id_to_codegen_ret,
+            render_export_items_index_vec,
           };
           let ecma_chunks = EcmaGenerator::instantiate_chunk(&mut ctx).await;
 
@@ -211,6 +224,7 @@ impl GenerateStage<'_> {
             warnings: vec![],
             // FIXME: module_id_to_codegen_ret is currently not used in CssGenerator. But we need to pass it to satisfy the args.
             module_id_to_codegen_ret: vec![],
+            render_export_items_index_vec: &index_vec![],
           };
           let css_chunks = CssGenerator::instantiate_chunk(&mut ctx).await;
 
@@ -224,6 +238,7 @@ impl GenerateStage<'_> {
             warnings: vec![],
             // FIXME: module_id_to_codegen_ret is currently not used in AssetGenerator. But we need to pass it to satisfy the args.
             module_id_to_codegen_ret: vec![],
+            render_export_items_index_vec: &index_vec![],
           };
           let asset_chunks = AssetGenerator::instantiate_chunk(&mut ctx).await;
 
@@ -232,7 +247,8 @@ impl GenerateStage<'_> {
               asset_chunks.map(|asset_chunks| [ecma_chunks, css_chunks, asset_chunks])
             })
           })
-        }),
+        },
+      ),
     )
     .await?
     .into_iter()
@@ -270,15 +286,14 @@ impl GenerateStage<'_> {
     &self,
     chunk_graph: &ChunkGraph,
   ) -> Vec<Vec<Option<ModuleRenderOutput>>> {
-    let chunk_to_codegen_ret = chunk_graph
+    chunk_graph
       .chunk_table
       .par_iter()
-      .filter(|chunk| chunk.is_alive)
       .map(|item| {
         item
           .modules
           .par_iter()
-          .map(|&module_idx| match self.link_output.module_table.modules[module_idx].as_normal() {
+          .map(|&module_idx| match self.link_output.module_table[module_idx].as_normal() {
             Some(module) => {
               let ast = &self.link_output.ast_table[module.ecma_ast_idx()].0;
               module.render(self.options, &ModuleRenderArgs::Ecma { ast })
@@ -287,87 +302,7 @@ impl GenerateStage<'_> {
           })
           .collect::<Vec<_>>()
       })
-      .collect::<Vec<_>>();
-    chunk_to_codegen_ret
-  }
-
-  async fn process_code_and_sourcemap(
-    &self,
-    code: &mut String,
-    map: &mut SourceMap,
-    output_assets: &mut Vec<Output>,
-    file_dir: &Path,
-    filename: &str,
-    debug_id: u128,
-  ) -> BuildResult<()> {
-    let file_base_name = Path::new(filename).file_name().expect("should have file name");
-    map.set_file(file_base_name.to_string_lossy().as_ref());
-
-    let map_filename = format!("{filename}.map");
-    let map_path = file_dir.join(&map_filename);
-
-    if let Some(source_map_ignore_list) = &self.options.sourcemap_ignore_list {
-      let mut x_google_ignore_list = vec![];
-      for (index, source) in map.get_sources().enumerate() {
-        if source_map_ignore_list.call(source, map_path.to_string_lossy().as_ref()).await? {
-          #[allow(clippy::cast_possible_truncation)]
-          x_google_ignore_list.push(index as u32);
-        }
-      }
-      if !x_google_ignore_list.is_empty() {
-        map.set_x_google_ignore_list(x_google_ignore_list);
-      }
-    }
-
-    if let Some(sourcemap_path_transform) = &self.options.sourcemap_path_transform {
-      let mut sources = Vec::with_capacity(map.get_sources().count());
-      for source in map.get_sources() {
-        sources
-          .push(sourcemap_path_transform.call(source, map_path.to_string_lossy().as_ref()).await?);
-      }
-      map.set_sources(sources.iter().map(std::convert::AsRef::as_ref).collect::<Vec<_>>());
-    }
-
-    if self.options.sourcemap_debug_ids && self.options.sourcemap.is_some() {
-      let debug_id_str = uuid_v4_string_from_u128(debug_id);
-      map.set_debug_id(&debug_id_str);
-      code.push_str("\n//# debugId=");
-      code.push_str(debug_id_str.as_str());
-    }
-
-    // Normalize the windows path at final.
-    let sources = map.get_sources().map(|x| x.to_slash_lossy().to_string()).collect::<Vec<_>>();
-    map.set_sources(sources.iter().map(std::convert::AsRef::as_ref).collect::<Vec<_>>());
-
-    if let Some(sourcemap) = &self.options.sourcemap {
-      match sourcemap {
-        SourceMapType::File | SourceMapType::Hidden => {
-          let source = map.to_json_string();
-          output_assets.push(Output::Asset(Box::new(OutputAsset {
-            filename: map_filename.as_str().into(),
-            source: source.into(),
-            original_file_names: vec![],
-            names: vec![],
-          })));
-          if matches!(sourcemap, SourceMapType::File) {
-            code.push_str("\n//# sourceMappingURL=");
-            code.push_str(
-              &Path::new(&map_filename)
-                .file_name()
-                .expect("should have filename")
-                .to_string_lossy(),
-            );
-          }
-        }
-        SourceMapType::Inline => {
-          let data_url = map.to_data_url();
-          code.push_str("\n//# sourceMappingURL=");
-          code.push_str(&data_url);
-        }
-      }
-    }
-
-    Ok(())
+      .collect::<Vec<_>>()
   }
 }
 

@@ -2,8 +2,8 @@ use std::{borrow::Cow, sync::Arc};
 
 use rolldown::{BundlerOptions, InputItem};
 use rolldown_plugin::{
-  CustomField, HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn, Plugin, PluginContext,
-  PluginContextResolveOptions, typedmap::TypedMapKey,
+  CustomField, HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn, HookUsage, Plugin,
+  PluginContext, PluginContextResolveOptions, typedmap::TypedMapKey,
 };
 use rolldown_testing::{abs_file_dir, integration_test::IntegrationTest, test_config::TestMeta};
 #[derive(Debug)]
@@ -42,7 +42,7 @@ impl Plugin for TestPluginCaller {
       if custom_resolve_ret.id == "hello, world" {
         Ok(Some(HookResolveIdOutput {
           id: arcstr::literal!("hello, world"),
-          external: Some(true),
+          external: Some(true.into()),
           ..Default::default()
         }))
       } else {
@@ -51,6 +51,10 @@ impl Plugin for TestPluginCaller {
     } else {
       Ok(None)
     }
+  }
+
+  fn register_hook_usage(&self) -> HookUsage {
+    HookUsage::all()
   }
 }
 
@@ -72,6 +76,10 @@ impl Plugin for TestPluginReceiver {
       return Ok(Some(HookResolveIdOutput { id: value.as_str().into(), ..Default::default() }));
     }
     Ok(None)
+  }
+
+  fn register_hook_usage(&self) -> HookUsage {
+    HookUsage::ResolveId
   }
 }
 

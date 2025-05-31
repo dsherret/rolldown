@@ -2,19 +2,19 @@ use oxc_index::IndexVec;
 #[cfg(debug_assertions)]
 use rolldown_common::common_debug_symbol_ref;
 use rolldown_common::{
-  EntryPoint, EntryPointKind, ImportKind, ModuleIdx, ModuleTable, RuntimeModuleBrief, SymbolRef,
-  SymbolRefDb, dynamic_import_usage::DynamicImportExportsUsage,
+  EntryPoint, ImportKind, ModuleIdx, ModuleTable, RuntimeModuleBrief, SymbolRef, SymbolRefDb,
+  dynamic_import_usage::DynamicImportExportsUsage,
 };
 use rolldown_error::BuildDiagnostic;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
   SharedOptions,
-  type_alias::{IndexAstScope, IndexEcmaAst},
+  type_alias::IndexEcmaAst,
   types::linking_metadata::{LinkingMetadata, LinkingMetadataVec},
 };
 
-use super::scan_stage::ScanStageOutput;
+use super::scan_stage::NormalizedScanStageOutput;
 
 mod bind_imports_and_exports;
 mod compute_tla;
@@ -38,10 +38,9 @@ pub struct LinkStageOutput {
   pub runtime: RuntimeModuleBrief,
   pub warnings: Vec<BuildDiagnostic>,
   pub errors: Vec<BuildDiagnostic>,
-  pub ast_scope_table: IndexAstScope,
   pub used_symbol_refs: FxHashSet<SymbolRef>,
   pub dynamic_import_exports_usage_map: FxHashMap<ModuleIdx, DynamicImportExportsUsage>,
-  pub lived_entry_points: FxHashSet<ModuleIdx>,
+  pub safely_merge_cjs_ns_map: FxHashMap<ModuleIdx, Vec<SymbolRef>>,
 }
 
 #[derive(Debug)]
@@ -55,14 +54,15 @@ pub struct LinkStage<'a> {
   pub warnings: Vec<BuildDiagnostic>,
   pub errors: Vec<BuildDiagnostic>,
   pub ast_table: IndexEcmaAst,
-  pub ast_scope_table: IndexAstScope,
   pub options: &'a SharedOptions,
   pub used_symbol_refs: FxHashSet<SymbolRef>,
+  pub safely_merge_cjs_ns_map: FxHashMap<ModuleIdx, Vec<SymbolRef>>,
   pub dynamic_import_exports_usage_map: FxHashMap<ModuleIdx, DynamicImportExportsUsage>,
+  pub normal_symbol_exports_chain_map: FxHashMap<SymbolRef, Vec<SymbolRef>>,
 }
 
 impl<'a> LinkStage<'a> {
-  pub fn new(scan_stage_output: ScanStageOutput, options: &'a SharedOptions) -> Self {
+  pub fn new(scan_stage_output: NormalizedScanStageOutput, options: &'a SharedOptions) -> Self {
     Self {
       sorted_modules: Vec::new(),
       metas: scan_stage_output
@@ -90,7 +90,6 @@ impl<'a> LinkStage<'a> {
         })
         .collect::<IndexVec<ModuleIdx, _>>(),
       module_table: scan_stage_output.module_table,
-      ast_scope_table: scan_stage_output.index_ast_scope,
       entries: scan_stage_output.entry_points,
       symbols: scan_stage_output.symbol_ref_db,
       runtime: scan_stage_output.runtime,
@@ -100,6 +99,8 @@ impl<'a> LinkStage<'a> {
       dynamic_import_exports_usage_map: scan_stage_output.dynamic_import_exports_usage_map,
       options,
       used_symbol_refs: FxHashSet::default(),
+      safely_merge_cjs_ns_map: scan_stage_output.safely_merge_cjs_ns_map,
+      normal_symbol_exports_chain_map: FxHashMap::default(),
     }
   }
 
@@ -120,7 +121,6 @@ impl<'a> LinkStage<'a> {
     tracing::trace!("meta {:#?}", self.metas.iter_enumerated().collect::<Vec<_>>());
 
     LinkStageOutput {
-      lived_entry_points: self.get_lived_entry(),
       module_table: self.module_table,
       entries: self.entries,
       // sorted_modules: self.sorted_modules,
@@ -132,30 +132,8 @@ impl<'a> LinkStage<'a> {
       ast_table: self.ast_table,
       used_symbol_refs: self.used_symbol_refs,
       dynamic_import_exports_usage_map: self.dynamic_import_exports_usage_map,
-      ast_scope_table: self.ast_scope_table,
+      safely_merge_cjs_ns_map: self.safely_merge_cjs_ns_map,
     }
-  }
-
-  #[inline]
-  fn get_lived_entry(&self) -> FxHashSet<ModuleIdx> {
-    self
-      .entries
-      .iter()
-      .filter_map(|item| match item.kind {
-        EntryPointKind::UserDefined => Some(item.id),
-        EntryPointKind::DynamicImport => {
-          // At least one statement that create this entry is included
-          let lived = item.related_stmt_infos.iter().any(|(module_idx, stmt_idx)| {
-            let module = &self.module_table.modules[*module_idx]
-              .as_normal()
-              .expect("should be a normal module");
-            let stmt_info = &module.stmt_infos[*stmt_idx];
-            stmt_info.is_included
-          });
-          lived.then_some(item.id)
-        }
-      })
-      .collect::<FxHashSet<ModuleIdx>>()
   }
 
   /// A helper function used to debug symbol in link process

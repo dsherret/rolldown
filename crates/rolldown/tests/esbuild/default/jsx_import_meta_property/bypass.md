@@ -19,11 +19,10 @@ f = function() {
 ```
 ### rolldown
 ```js
-
 //#region factory.jsx
-console.log([import.meta.factory("x", null), /* @__PURE__ */ import.meta.factory("x", null)]);
+console.log([/* @__PURE__ */ import.meta.factory("x", null), /* @__PURE__ */ import.meta.factory("x", null)]);
 f = function() {
-	console.log([import.meta.factory("y", null), /* @__PURE__ */ import.meta.factory("y", null)]);
+	console.log([/* @__PURE__ */ import.meta.factory("y", null), /* @__PURE__ */ import.meta.factory("y", null)]);
 };
 
 //#endregion
@@ -60,10 +59,9 @@ console.log([
 ```
 ### rolldown
 ```js
-
 //#region fragment.jsx
-console.log([import.meta.factory(import.meta.fragment, null, "x"), /* @__PURE__ */ import.meta.factory(import.meta.fragment, null, "x")]), f = function() {
-	console.log([import.meta.factory(import.meta.fragment, null, "y"), /* @__PURE__ */ import.meta.factory(import.meta.fragment, null, "y")]);
+console.log([/* @__PURE__ */ import.meta.factory(import.meta.fragment, null, "x"), /* @__PURE__ */ import.meta.factory(import.meta.fragment, null, "x")]), f = function() {
+	console.log([/* @__PURE__ */ import.meta.factory(import.meta.fragment, null, "y"), /* @__PURE__ */ import.meta.factory(import.meta.fragment, null, "y")]);
 };
 
 //#endregion

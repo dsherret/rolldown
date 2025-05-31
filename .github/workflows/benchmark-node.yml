@@ -1,32 +1,20 @@
 name: Benchmarks Node
 
+permissions: {}
+
 on:
+  workflow_dispatch:
   push:
     branches:
-      - 'main' # or "master"
+      - 'main'
     paths:
       - '**/*.rs'
-      - '**/*.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'packages/rolldown/**'
       - 'packages/bench/**'
-      - '.github/workflows/**'
-      - 'package.json'
       - 'pnpm-lock.yaml'
-  pull_request:
-    types: [opened, synchronize]
-    paths:
-      - '**/*.rs'
-      - '**/*.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'packages/rolldown/**'
-      - 'packages/bench/**'
-      - '.github/workflows/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-  workflow_dispatch:
+      - '.github/workflows/benchmark-node.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
@@ -40,18 +28,15 @@ jobs:
       pull-requests: write
       contents: write
     steps:
-      - name: Checkout Branch
-        uses: actions/checkout@v4
-        with:
-          # Whether Pull submodules for additional files
-          submodules: false
+      - uses: taiki-e/checkout-action@b13d20b7cda4e2f325ef19895128f7ff735c0b3d # v1.3.1
 
       - name: Download previous benchmark data
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           # https://github.com/rolldown/benchmark-results-storage
           repository: rolldown/benchmark-results-storage
           path: tmp
+          persist-credentials: false
 
       - name: List Files
         run: find -maxdepth 2 -ls
@@ -60,7 +45,7 @@ jobs:
         uses: ./.github/actions/setup-node
 
       - name: Setup Rust
-        uses: ./.github/actions/setup-rust
+        uses: oxc-project/setup-rust@cd82e1efec7fef815e2c23d296756f31c7cdc03d # v1.0.0
         with:
           tools: just
           cache-key: release-build
@@ -75,7 +60,7 @@ jobs:
         run: pnpm --filter bench run bench-ci
 
       - name: Show/Update benchmark result
-        uses: benchmark-action/github-action-benchmark@v1
+        uses: benchmark-action/github-action-benchmark@d48d326b4ca9ba73ca0cd0d59f108f9e02a381c7 # v1.20.4
         with:
           name: 'Node Benchmark'
           # What benchmark tool the output.txt came from

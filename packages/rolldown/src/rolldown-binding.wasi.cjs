@@ -9,9 +9,9 @@ const { WASI: __nodeWASI } = require('node:wasi')
 const { Worker } = require('node:worker_threads')
 
 const {
-  instantiateNapiModuleSync: __emnapiInstantiateNapiModuleSync,
-  getDefaultContext: __emnapiGetDefaultContext,
   createOnMessage: __wasmCreateOnMessageForFsProxy,
+  getDefaultContext: __emnapiGetDefaultContext,
+  instantiateNapiModuleSync: __emnapiInstantiateNapiModuleSync,
 } = require('@napi-rs/wasm-runtime')
 
 const __rootDir = __nodePath.parse(process.cwd()).root
@@ -84,8 +84,9 @@ const { instance: __napiInstance, module: __wasiModule, napiModule: __napiModule
     }
   },
 })
-
+module.exports = __napiModule.exports
 module.exports.BindingBundleEndEventData = __napiModule.exports.BindingBundleEndEventData
+module.exports.BindingBundleErrorEventData = __napiModule.exports.BindingBundleErrorEventData
 module.exports.BindingCallableBuiltinPlugin = __napiModule.exports.BindingCallableBuiltinPlugin
 module.exports.BindingError = __napiModule.exports.BindingError
 module.exports.BindingModuleInfo = __napiModule.exports.BindingModuleInfo
@@ -94,6 +95,8 @@ module.exports.BindingOutputAsset = __napiModule.exports.BindingOutputAsset
 module.exports.BindingOutputChunk = __napiModule.exports.BindingOutputChunk
 module.exports.BindingOutputs = __napiModule.exports.BindingOutputs
 module.exports.BindingPluginContext = __napiModule.exports.BindingPluginContext
+module.exports.BindingRenderedChunk = __napiModule.exports.BindingRenderedChunk
+module.exports.BindingRenderedChunkMeta = __napiModule.exports.BindingRenderedChunkMeta
 module.exports.BindingRenderedModule = __napiModule.exports.BindingRenderedModule
 module.exports.BindingTransformPluginContext = __napiModule.exports.BindingTransformPluginContext
 module.exports.BindingWatcher = __napiModule.exports.BindingWatcher
@@ -102,19 +105,31 @@ module.exports.BindingWatcherEvent = __napiModule.exports.BindingWatcherEvent
 module.exports.Bundler = __napiModule.exports.Bundler
 module.exports.ParallelJsPluginRegistry = __napiModule.exports.ParallelJsPluginRegistry
 module.exports.ParseResult = __napiModule.exports.ParseResult
-module.exports.RenderedChunk = __napiModule.exports.RenderedChunk
+module.exports.ResolverFactory = __napiModule.exports.ResolverFactory
 module.exports.BindingBuiltinPluginName = __napiModule.exports.BindingBuiltinPluginName
 module.exports.BindingHookSideEffects = __napiModule.exports.BindingHookSideEffects
+module.exports.BindingJsx = __napiModule.exports.BindingJsx
 module.exports.BindingLogLevel = __napiModule.exports.BindingLogLevel
 module.exports.BindingPluginOrder = __napiModule.exports.BindingPluginOrder
+module.exports.EnforceExtension = __napiModule.exports.EnforceExtension
 module.exports.ExportExportNameKind = __napiModule.exports.ExportExportNameKind
 module.exports.ExportImportNameKind = __napiModule.exports.ExportImportNameKind
 module.exports.ExportLocalNameKind = __napiModule.exports.ExportLocalNameKind
+module.exports.FilterTokenKind = __napiModule.exports.FilterTokenKind
+module.exports.getBufferOffset = __napiModule.exports.getBufferOffset
 module.exports.HelperMode = __napiModule.exports.HelperMode
 module.exports.ImportNameKind = __napiModule.exports.ImportNameKind
 module.exports.isolatedDeclaration = __napiModule.exports.isolatedDeclaration
+module.exports.moduleRunnerTransform = __napiModule.exports.moduleRunnerTransform
+module.exports.ModuleType = __napiModule.exports.ModuleType
 module.exports.parseAsync = __napiModule.exports.parseAsync
+module.exports.parseAsyncRaw = __napiModule.exports.parseAsyncRaw
 module.exports.parseSync = __napiModule.exports.parseSync
+module.exports.parseSyncRaw = __napiModule.exports.parseSyncRaw
+module.exports.rawTransferSupported = __napiModule.exports.rawTransferSupported
 module.exports.registerPlugins = __napiModule.exports.registerPlugins
 module.exports.Severity = __napiModule.exports.Severity
+module.exports.shutdownAsyncRuntime = __napiModule.exports.shutdownAsyncRuntime
+module.exports.startAsyncRuntime = __napiModule.exports.startAsyncRuntime
+module.exports.sync = __napiModule.exports.sync
 module.exports.transform = __napiModule.exports.transform

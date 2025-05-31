@@ -32,7 +32,7 @@ fn wrap_module_recursively(ctx: &mut Context, target: ModuleIdx) {
     }
   }
 
-  module.import_records.iter().filter(|item| !item.is_dummy()).for_each(|importee| {
+  module.import_records.iter().for_each(|importee| {
     wrap_module_recursively(ctx, importee.resolved_module);
   });
 }
@@ -96,36 +96,39 @@ impl LinkStage<'_> {
       let is_strict_execution_order = self.options.experimental.is_strict_execution_order_enabled();
       let is_wrap_kind_none = matches!(self.metas[module_id].wrap_kind, WrapKind::None);
 
-      if is_strict_execution_order && is_wrap_kind_none {
-        self.metas[module_id].wrap_kind = match module.exports_kind {
-          ExportsKind::Esm | ExportsKind::None => WrapKind::Esm,
-          ExportsKind::CommonJs => WrapKind::Cjs,
-        }
-      }
+      // When `strict_execution_order` is enabled, we need to wrap every module to lazy/control their execution.
+      // However, this doesn't include runtime module. runtime module should be initialized on its own.
+      let need_to_wrap =
+        !is_wrap_kind_none || (is_strict_execution_order && module_id != self.runtime.id());
 
-      let need_to_wrap = is_strict_execution_order || !is_wrap_kind_none;
-
-      // The `modules` don't seem to be sorted,
-      // and if the module is `WrapKind::None`, it might still be wrapped next iter.
       if need_to_wrap {
-        visited_modules_for_wrapping[module_id] = true;
+        wrap_module_recursively(
+          &mut Context {
+            visited_modules: &mut visited_modules_for_wrapping,
+            linking_infos: &mut self.metas,
+            modules: &self.module_table.modules,
+          },
+          module_id,
+        );
+      } else {
+        // Make sure depended cjs modules got wrapped.
+        module.import_records.iter().for_each(|rec| {
+          let Module::Normal(importee) = &self.module_table[rec.resolved_module] else {
+            return;
+          };
+          // Commonjs as a dependency must be wrapped. The wrapper is like a commonjs runtime to help initialize the commonjs module correctly.
+          if matches!(importee.exports_kind, ExportsKind::CommonJs) {
+            wrap_module_recursively(
+              &mut Context {
+                visited_modules: &mut visited_modules_for_wrapping,
+                linking_infos: &mut self.metas,
+                modules: &self.module_table.modules,
+              },
+              importee.idx,
+            );
+          }
+        });
       }
-
-      module.import_records.iter().filter(|rec| !rec.is_dummy()).for_each(|rec| {
-        let Module::Normal(importee) = &self.module_table.modules[rec.resolved_module] else {
-          return;
-        };
-        if matches!(importee.exports_kind, ExportsKind::CommonJs) || need_to_wrap {
-          wrap_module_recursively(
-            &mut Context {
-              visited_modules: &mut visited_modules_for_wrapping,
-              linking_infos: &mut self.metas,
-              modules: &self.module_table.modules,
-            },
-            importee.idx,
-          );
-        }
-      });
     }
     self.module_table.modules.iter_mut().filter_map(|m| m.as_normal_mut()).for_each(
       |ecma_module| {
@@ -163,19 +166,18 @@ pub fn create_wrapper(
         } else {
           runtime.resolve_symbol("__commonJSMin").into()
         }],
-        side_effect: true,
+        side_effect: false,
         is_included: false,
         import_records: Vec::new(),
         #[cfg(debug_assertions)]
         debug_label: None,
         meta: StmtInfoMeta::default(),
-        ..Default::default()
+
+        force_tree_shaking: true,
       };
 
       linking_info.wrapper_stmt_info = Some(module.stmt_infos.add_stmt_info(stmt_info));
       linking_info.wrapper_ref = Some(wrapper_ref);
-      module.generate_esm_namespace_in_cjs_node_mode_stmt(symbols, runtime, wrapper_ref);
-      module.generate_esm_namespace_in_cjs_stmt(symbols, runtime, wrapper_ref);
     }
     // If this is a lazily-initialized ESM file, we're going to need to
     // generate a wrapper for the ESM closure. That will end up looking
@@ -197,13 +199,13 @@ pub fn create_wrapper(
         } else {
           runtime.resolve_symbol("__esmMin").into()
         }],
-        side_effect: false,
+        side_effect: true,
         is_included: false,
         import_records: Vec::new(),
         #[cfg(debug_assertions)]
         debug_label: None,
         meta: StmtInfoMeta::default(),
-        ..Default::default()
+        force_tree_shaking: true,
       };
 
       linking_info.wrapper_stmt_info = Some(module.stmt_infos.add_stmt_info(stmt_info));

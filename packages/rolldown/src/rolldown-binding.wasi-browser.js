@@ -1,8 +1,8 @@
 import {
-  instantiateNapiModuleSync as __emnapiInstantiateNapiModuleSync,
-  getDefaultContext as __emnapiGetDefaultContext,
-  WASI as __WASI,
   createOnMessage as __wasmCreateOnMessageForFsProxy,
+  getDefaultContext as __emnapiGetDefaultContext,
+  instantiateNapiModule as __emnapiInstantiateNapiModule,
+  WASI as __WASI,
 } from '@napi-rs/wasm-runtime'
 import { memfs } from '@napi-rs/wasm-runtime/fs'
 import __wasmUrl from './rolldown-binding.wasm32-wasi.wasm?url'
@@ -31,7 +31,7 @@ const {
   instance: __napiInstance,
   module: __wasiModule,
   napiModule: __napiModule,
-} = __emnapiInstantiateNapiModuleSync(__wasmFile, {
+} = await __emnapiInstantiateNapiModule(__wasmFile, {
   context: __emnapiContext,
   asyncWorkPoolSize: 4,
   wasi: __wasi,
@@ -60,7 +60,9 @@ const {
     }
   },
 })
+export default __napiModule.exports
 export const BindingBundleEndEventData = __napiModule.exports.BindingBundleEndEventData
+export const BindingBundleErrorEventData = __napiModule.exports.BindingBundleErrorEventData
 export const BindingCallableBuiltinPlugin = __napiModule.exports.BindingCallableBuiltinPlugin
 export const BindingError = __napiModule.exports.BindingError
 export const BindingModuleInfo = __napiModule.exports.BindingModuleInfo
@@ -69,6 +71,8 @@ export const BindingOutputAsset = __napiModule.exports.BindingOutputAsset
 export const BindingOutputChunk = __napiModule.exports.BindingOutputChunk
 export const BindingOutputs = __napiModule.exports.BindingOutputs
 export const BindingPluginContext = __napiModule.exports.BindingPluginContext
+export const BindingRenderedChunk = __napiModule.exports.BindingRenderedChunk
+export const BindingRenderedChunkMeta = __napiModule.exports.BindingRenderedChunkMeta
 export const BindingRenderedModule = __napiModule.exports.BindingRenderedModule
 export const BindingTransformPluginContext = __napiModule.exports.BindingTransformPluginContext
 export const BindingWatcher = __napiModule.exports.BindingWatcher
@@ -77,19 +81,31 @@ export const BindingWatcherEvent = __napiModule.exports.BindingWatcherEvent
 export const Bundler = __napiModule.exports.Bundler
 export const ParallelJsPluginRegistry = __napiModule.exports.ParallelJsPluginRegistry
 export const ParseResult = __napiModule.exports.ParseResult
-export const RenderedChunk = __napiModule.exports.RenderedChunk
+export const ResolverFactory = __napiModule.exports.ResolverFactory
 export const BindingBuiltinPluginName = __napiModule.exports.BindingBuiltinPluginName
 export const BindingHookSideEffects = __napiModule.exports.BindingHookSideEffects
+export const BindingJsx = __napiModule.exports.BindingJsx
 export const BindingLogLevel = __napiModule.exports.BindingLogLevel
 export const BindingPluginOrder = __napiModule.exports.BindingPluginOrder
+export const EnforceExtension = __napiModule.exports.EnforceExtension
 export const ExportExportNameKind = __napiModule.exports.ExportExportNameKind
 export const ExportImportNameKind = __napiModule.exports.ExportImportNameKind
 export const ExportLocalNameKind = __napiModule.exports.ExportLocalNameKind
+export const FilterTokenKind = __napiModule.exports.FilterTokenKind
+export const getBufferOffset = __napiModule.exports.getBufferOffset
 export const HelperMode = __napiModule.exports.HelperMode
 export const ImportNameKind = __napiModule.exports.ImportNameKind
 export const isolatedDeclaration = __napiModule.exports.isolatedDeclaration
+export const moduleRunnerTransform = __napiModule.exports.moduleRunnerTransform
+export const ModuleType = __napiModule.exports.ModuleType
 export const parseAsync = __napiModule.exports.parseAsync
+export const parseAsyncRaw = __napiModule.exports.parseAsyncRaw
 export const parseSync = __napiModule.exports.parseSync
+export const parseSyncRaw = __napiModule.exports.parseSyncRaw
+export const rawTransferSupported = __napiModule.exports.rawTransferSupported
 export const registerPlugins = __napiModule.exports.registerPlugins
 export const Severity = __napiModule.exports.Severity
+export const shutdownAsyncRuntime = __napiModule.exports.shutdownAsyncRuntime
+export const startAsyncRuntime = __napiModule.exports.startAsyncRuntime
+export const sync = __napiModule.exports.sync
 export const transform = __napiModule.exports.transform

@@ -26,13 +26,12 @@ __reExport(entry_exports, require("./external"), module.exports);
 ```
 ### rolldown
 ```js
-"use strict";
 
 //#region internal.js
 let foo = 123;
 
 //#endregion
-exports.foo = foo
+exports.foo = foo;
 var fs = require("fs");
 Object.keys(fs).forEach(function (k) {
   if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k)) Object.defineProperty(exports, k, {
@@ -41,11 +40,11 @@ Object.keys(fs).forEach(function (k) {
   });
 });
 
-var ___external = require("./external");
-Object.keys(___external).forEach(function (k) {
+var external = require("./external");
+Object.keys(external).forEach(function (k) {
   if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k)) Object.defineProperty(exports, k, {
     enumerable: true,
-    get: function () { return ___external[k]; }
+    get: function () { return external[k]; }
   });
 });
 
@@ -78,12 +77,12 @@ Object.keys(___external).forEach(function (k) {
 +        }
 +    });
  });
-+var ___external = require("./external");
-+Object.keys(___external).forEach(function (k) {
++var external = require("./external");
++Object.keys(external).forEach(function (k) {
 +    if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k)) Object.defineProperty(exports, k, {
 +        enumerable: true,
 +        get: function () {
-+            return ___external[k];
++            return external[k];
 +        }
 +    });
 +});

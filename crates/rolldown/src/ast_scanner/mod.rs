@@ -9,7 +9,7 @@ pub mod side_effect_detector;
 use arcstr::ArcStr;
 use oxc::ast::ast::MemberExpression;
 use oxc::ast::{AstKind, ast};
-use oxc::semantic::{Reference, ScopeFlags, ScopeId, ScopeTree, SymbolTable};
+use oxc::semantic::{Reference, ScopeFlags, ScopeId, Scoping};
 use oxc::span::SPAN;
 use oxc::{
   ast::{
@@ -26,9 +26,9 @@ use oxc::{
 use oxc_index::IndexVec;
 use rolldown_common::dynamic_import_usage::{DynamicImportExportsUsage, DynamicImportUsageInfo};
 use rolldown_common::{
-  AstScopes, EcmaModuleAstUsage, ExportsKind, HmrInfo, ImportKind, ImportRecordIdx,
-  ImportRecordMeta, LocalExport, MemberExprRef, ModuleDefFormat, ModuleId, ModuleIdx, NamedImport,
-  RawImportRecord, Specifier, StmtInfo, StmtInfos, SymbolRef, SymbolRefDbForModule, SymbolRefFlags,
+  EcmaModuleAstUsage, ExportsKind, HmrInfo, ImportKind, ImportRecordIdx, ImportRecordMeta,
+  LocalExport, MemberExprRef, ModuleDefFormat, ModuleId, ModuleIdx, NamedImport, RawImportRecord,
+  Specifier, StmtInfo, StmtInfos, SymbolRef, SymbolRefDbForModule, SymbolRefFlags,
   ThisExprReplaceKind,
 };
 use rolldown_ecmascript_utils::{BindingIdentifierExt, BindingPatternExt};
@@ -44,6 +44,12 @@ use sugar_path::SugarPath;
 
 use crate::SharedOptions;
 
+// TODO: Not sure if this necessary to match the module request.
+// If we found it cause high false positive, we could add a extra step to match it package name as
+// well.
+static ENABLED_CJS_NAMESPACE_MERGING_MODULE_REQUEST: [&str; 3] =
+  ["this-is-only-used-for-testing", "react", "react/jsx-runtime"];
+
 #[derive(Debug)]
 pub struct ScanResult {
   /// Using `IndexMap` to make sure the order of the named imports always sorted by the span of the
@@ -56,12 +62,12 @@ pub struct ScanResult {
   /// Represents [Module Namespace Object](https://tc39.es/ecma262/#sec-module-namespace-exotic-objects)
   pub namespace_object_ref: SymbolRef,
   pub imports: FxHashMap<Span, ImportRecordIdx>,
+  pub dummy_record_set: FxHashSet<Span>,
   pub exports_kind: ExportsKind,
   pub warnings: Vec<BuildDiagnostic>,
   pub errors: Vec<BuildDiagnostic>,
   pub has_eval: bool,
   pub ast_usage: EcmaModuleAstUsage,
-  pub ast_scope: AstScopes,
   pub symbol_ref_db: SymbolRefDbForModule,
   /// https://github.com/evanw/esbuild/blob/d34e79e2a998c21bb71d57b92b0017ca11756912/internal/js_parser/js_parser_lower_class.go#L2277-L2283
   /// used for check if current class decl symbol was referenced in its class scope
@@ -80,6 +86,8 @@ pub struct ScanResult {
   pub new_url_references: FxHashMap<Span, ImportRecordIdx>,
   pub this_expr_replace_map: FxHashMap<Span, ThisExprReplaceKind>,
   pub hmr_info: HmrInfo,
+  pub hmr_hot_ref: Option<SymbolRef>,
+  pub directive_range: Vec<Span>,
 }
 
 pub struct AstScanner<'me, 'ast> {
@@ -117,8 +125,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
   #[allow(clippy::too_many_arguments)]
   pub fn new(
     idx: ModuleIdx,
-    scope_tree: ScopeTree,
-    symbol_table: SymbolTable,
+    scoping: Scoping,
     repr_name: &'me str,
     module_type: ModuleDefFormat,
     source: &'me ArcStr,
@@ -126,8 +133,8 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
     comments: &'me oxc::allocator::Vec<'me, Comment>,
     options: &'me SharedOptions,
   ) -> Self {
-    let ast_scope = AstScopes::new(scope_tree);
-    let mut symbol_ref_db = SymbolRefDbForModule::new(symbol_table, idx, ast_scope.root_scope_id());
+    let root_scope_id = scoping.root_scope_id();
+    let mut symbol_ref_db = SymbolRefDbForModule::new(scoping, idx, root_scope_id);
     // This is used for converting "export default foo;" => "var default_symbol = foo;"
     let legitimized_repr_name = legitimize_identifier_name(repr_name);
     let default_export_ref = symbol_ref_db
@@ -135,6 +142,10 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
 
     let name = concat_string!(legitimized_repr_name, "_exports");
     let namespace_object_ref = symbol_ref_db.create_facade_root_symbol_ref(&name);
+
+    let hmr_hot_ref = options.experimental.hmr.as_ref().map(|_| {
+      symbol_ref_db.create_facade_root_symbol_ref(&concat_string!(legitimized_repr_name, "_hot"))
+    });
 
     let result = ScanResult {
       named_imports: FxIndexMap::default(),
@@ -154,7 +165,6 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
       has_eval: false,
       errors: Vec::new(),
       ast_usage: EcmaModuleAstUsage::empty(),
-      ast_scope,
       symbol_ref_db,
       self_referenced_class_decl_symbol_ids: FxHashSet::default(),
       hashbang_range: None,
@@ -163,6 +173,9 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
       new_url_references: FxHashMap::default(),
       this_expr_replace_map: FxHashMap::default(),
       hmr_info: HmrInfo::default(),
+      hmr_hot_ref,
+      directive_range: vec![],
+      dummy_record_set: FxHashSet::default(),
     };
 
     Self {
@@ -193,8 +206,15 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
   /// if current visit path is top level
   pub fn is_valid_tla_scope(&self) -> bool {
     self.scope_stack.iter().rev().filter_map(|item| *item).all(|scope| {
-      let flag = self.result.ast_scope.get_flags(scope);
+      let flag = self.result.symbol_ref_db.scoping().scope_flags(scope);
       flag.is_block() || flag.is_top()
+    })
+  }
+
+  pub fn is_root_scope(&self) -> bool {
+    self.scope_stack.iter().rev().filter_map(|item| *item).all(|scope| {
+      let flag = self.result.symbol_ref_db.scoping().scope_flags(scope);
+      flag.is_top()
     })
   }
 
@@ -249,6 +269,12 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
 
     self.result.exports_kind = exports_kind;
 
+    if self.options.is_hmr_enabled() && exports_kind.is_commonjs() {
+      // https://github.com/rolldown/rolldown/issues/4129
+      // For cjs module with hmr enabled, bundler will generates code that references `module`.
+      self.ast_usage.insert(EcmaModuleAstUsage::ModuleRef);
+    }
+
     if cfg!(debug_assertions) {
       use rustc_hash::FxHashSet;
       let mut scanned_symbols_in_root_scope = self
@@ -257,11 +283,14 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         .iter()
         .flat_map(|stmt_info| stmt_info.declared_symbols.iter())
         .collect::<FxHashSet<_>>();
-      for (name, symbol_id) in
-        self.result.ast_scope.get_bindings(self.result.ast_scope.root_scope_id())
+      for (name, symbol_id) in self
+        .result
+        .symbol_ref_db
+        .scoping()
+        .get_bindings(self.result.symbol_ref_db.scoping().root_scope_id())
       {
         let symbol_ref: SymbolRef = (self.idx, *symbol_id).into();
-        let scope_id = self.result.symbol_ref_db.get_scope_id(*symbol_id);
+        let scope_id = self.result.symbol_ref_db.symbol_scope_id(*symbol_id);
         if !scanned_symbols_in_root_scope.remove(&symbol_ref) {
           return Err(anyhow::format_err!(
             "Symbol ({name:?}, {symbol_id:?}, {scope_id:?}) is declared in the top-level scope but doesn't get scanned by the scanner",
@@ -287,7 +316,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
   }
 
   fn get_root_binding(&self, name: &str) -> Option<SymbolId> {
-    self.result.ast_scope.get_root_binding(name)
+    self.result.symbol_ref_db.scoping().get_root_binding(name)
   }
 
   /// `is_dummy` means if it the import record is created during ast transformation.
@@ -307,7 +336,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         itoa::Buffer::new().format(self.current_stmt_info.stmt_idx.unwrap_or_default().raw()),
         "#"
       ));
-    let rec = RawImportRecord::new(
+    let mut rec = RawImportRecord::new(
       Rstr::from(module_request),
       kind,
       namespace_ref,
@@ -318,6 +347,13 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
       self.current_stmt_info.stmt_idx.map(|idx| idx + 1),
     )
     .with_meta(init_meta);
+
+    // TODO: maybe we could make it configurable?
+    if matches!(rec.kind, ImportKind::Import)
+      && ENABLED_CJS_NAMESPACE_MERGING_MODULE_REQUEST.contains(&module_request)
+    {
+      rec.meta.insert(ImportRecordMeta::SAFELY_MERGE_CJS_NS);
+    }
 
     let id = self.result.import_records.push(rec);
     self.current_stmt_info.import_records.push(id);
@@ -357,14 +393,11 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
   fn add_local_export(&mut self, export_name: &str, local: SymbolId, span: Span) {
     let symbol_ref: SymbolRef = (self.idx, local).into();
 
-    let is_const = self.result.symbol_ref_db.get_flags(local).is_const_variable();
+    let is_const = self.result.symbol_ref_db.scoping().symbol_flags(local).is_const_variable();
 
     // If there is any write reference to the local variable, it is reassigned.
-    let is_reassigned = self
-      .result
-      .ast_scope
-      .get_resolved_references(local, &self.result.symbol_ref_db)
-      .any(Reference::is_write);
+    let is_reassigned =
+      self.result.symbol_ref_db.get_resolved_references(local).any(Reference::is_write);
 
     let ref_flags = symbol_ref.flags_mut(&mut self.result.symbol_ref_db);
     if is_const {
@@ -442,9 +475,6 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
       record_id,
       span_imported,
     };
-    if name_import.imported.is_default() {
-      self.result.import_records[record_id].meta.insert(ImportRecordMeta::CONTAINS_IMPORT_DEFAULT);
-    }
     self.result.named_exports.insert(
       export_name.into(),
       LocalExport { referenced: generated_imported_as_ref, span: name_import.span_imported },
@@ -470,7 +500,6 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
       record_id,
     };
 
-    self.result.import_records[record_id].meta.insert(ImportRecordMeta::CONTAINS_IMPORT_STAR);
     self.result.named_exports.insert(
       export_name.into(),
       LocalExport { referenced: generated_imported_as_ref, span: name_import.span_imported },
@@ -569,7 +598,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         self.current_stmt_info.unwrap_debug_label()
       )
     });
-    self.result.ast_scope.symbol_id_for(ref_id, &self.result.symbol_ref_db)
+    self.result.symbol_ref_db.ast_scopes.symbol_id_for(ref_id)
   }
   fn scan_export_default_decl(&mut self, decl: &ExportDefaultDeclaration) {
     use oxc::ast::ast::ExportDefaultDeclarationKind;
@@ -616,18 +645,13 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         let sym = spec.local.expect_symbol_id();
         let imported = spec.imported.name();
         self.add_named_import(sym, imported.as_str(), rec_id, spec.imported.span());
-        if imported == "default" {
-          self.result.import_records[rec_id].meta.insert(ImportRecordMeta::CONTAINS_IMPORT_DEFAULT);
-        }
       }
       ast::ImportDeclarationSpecifier::ImportDefaultSpecifier(spec) => {
         self.add_named_import(spec.local.expect_symbol_id(), "default", rec_id, spec.span);
-        self.result.import_records[rec_id].meta.insert(ImportRecordMeta::CONTAINS_IMPORT_DEFAULT);
       }
       ast::ImportDeclarationSpecifier::ImportNamespaceSpecifier(spec) => {
         let symbol_id = spec.local.expect_symbol_id();
         self.add_star_import(symbol_id, rec_id, spec.span);
-        self.result.import_records[rec_id].meta.insert(ImportRecordMeta::CONTAINS_IMPORT_STAR);
       }
     });
   }
@@ -678,20 +702,21 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
   }
 
   fn is_root_symbol(&self, symbol_id: SymbolId) -> bool {
-    self.result.ast_scope.root_scope_id() == self.result.symbol_ref_db.get_scope_id(symbol_id)
+    self.result.symbol_ref_db.scoping().root_scope_id()
+      == self.result.symbol_ref_db.symbol_scope_id(symbol_id)
   }
 
   fn try_diagnostic_forbid_const_assign(&mut self, id_ref: &IdentifierReference) -> Option<()> {
     let ref_id = id_ref.reference_id.get()?;
-    let reference = &self.result.symbol_ref_db.references[ref_id];
+    let reference = &self.result.symbol_ref_db.scoping().get_reference(ref_id);
     if reference.is_write() {
       let symbol_id = reference.symbol_id()?;
-      if self.result.symbol_ref_db.get_flags(symbol_id).is_const_variable() {
+      if self.result.symbol_ref_db.scoping().symbol_flags(symbol_id).is_const_variable() {
         self.result.errors.push(BuildDiagnostic::forbid_const_assign(
           self.id.to_string(),
           self.source.clone(),
-          self.result.symbol_ref_db.get_name(symbol_id).into(),
-          self.result.symbol_ref_db.get_span(symbol_id),
+          self.result.symbol_ref_db.symbol_name(symbol_id).into(),
+          self.result.symbol_ref_db.scoping().symbol_span(symbol_id),
           id_ref.span(),
         ));
       }
@@ -751,7 +776,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
     self.is_nested_this_inside_class
       || self.scope_stack.iter().any(|scope| {
         scope.is_some_and(|scope| {
-          let flags = self.result.ast_scope.get_flags(scope);
+          let flags = self.result.symbol_ref_db.ast_scopes.scoping().scope_flags(scope);
           flags.contains(ScopeFlags::Function) && !flags.contains(ScopeFlags::Arrow)
         })
       })

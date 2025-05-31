@@ -1,18 +1,20 @@
-export interface ModuleSideEffectsRule {
-  test?: RegExp
-  external?: boolean
-  sideEffects: boolean
+interface ModuleSideEffectsRule {
+  test?: RegExp;
+  external?: boolean;
+  sideEffects: boolean;
 }
 
-export type ModuleSideEffectsOption =
+type ModuleSideEffectsOption =
   | boolean
   | ModuleSideEffectsRule[]
   | ((id: string, isResolved: boolean) => boolean | undefined)
-  | 'no-external'
+  | 'no-external';
 
 export type TreeshakingOptions =
   | {
-      moduleSideEffects?: ModuleSideEffectsOption
-      annotations?: boolean
-    }
-  | boolean
+    moduleSideEffects?: ModuleSideEffectsOption;
+    annotations?: boolean;
+    manualPureFunctions?: string[];
+    unknownGlobalSideEffects?: boolean;
+  }
+  | boolean;

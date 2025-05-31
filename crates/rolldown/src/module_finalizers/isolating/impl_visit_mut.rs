@@ -1,18 +1,21 @@
-use oxc::ast::ast::{self, ExportDefaultDeclarationKind, Expression, Statement};
-use oxc::ast_visit::{VisitMut, walk_mut};
-use oxc::span::{CompactStr, SPAN, Span};
+use oxc::{
+  allocator::{Box as ArenaBox, TakeIn},
+  ast::ast::{self, ExportDefaultDeclarationKind, Expression, Statement},
+  ast_visit::{VisitMut, walk_mut},
+  span::{CompactStr, SPAN, Span},
+};
 use rolldown_common::{Interop, Module, SymbolRef};
-use rolldown_ecmascript_utils::{CallExpressionExt, TakeIn};
-use rolldown_utils::ecmascript::legitimize_identifier_name;
+use rolldown_ecmascript_utils::CallExpressionExt;
 
 use super::IsolatingModuleFinalizer;
 
 impl<'ast> VisitMut<'ast> for IsolatingModuleFinalizer<'_, 'ast> {
   fn visit_program(&mut self, program: &mut ast::Program<'ast>) {
     // Drop the hashbang since we already store them in ast_scan phase and
-    // we don't want oxc to generate hashbang statement in module level since we already handle
+    // we don't want oxc to generate hashbang statement and directives in module level since we already handle
     // them in chunk level
     program.hashbang.take();
+    program.directives.clear();
     let mut stmts = self.snippet.builder.vec();
 
     for mut stmt in program.body.take_in(self.alloc) {
@@ -33,7 +36,7 @@ impl<'ast> VisitMut<'ast> for IsolatingModuleFinalizer<'_, 'ast> {
           self.transform_export_all_declaration(export_all_decl);
         }
         _ => stmts.push(stmt),
-      };
+      }
     }
 
     // Add __esModule flag for esm module
@@ -43,6 +46,7 @@ impl<'ast> VisitMut<'ast> for IsolatingModuleFinalizer<'_, 'ast> {
         self.snippet.call_expr_with_arg_expr(
           self.snippet.id_ref_expr("__toCommonJS", SPAN),
           self.snippet.id_ref_expr("exports", SPAN),
+          false,
         ),
       ));
     }
@@ -57,7 +61,6 @@ impl<'ast> VisitMut<'ast> for IsolatingModuleFinalizer<'_, 'ast> {
           Expression::ObjectExpression(self.snippet.builder.alloc_object_expression(
             SPAN,
             self.snippet.builder.vec_from_iter(self.generated_exports.drain(..)),
-            None,
           )),
         ),
       ));
@@ -74,12 +77,7 @@ impl<'ast> VisitMut<'ast> for IsolatingModuleFinalizer<'_, 'ast> {
       if let Some(named_import) = ident
         .reference_id
         .get()
-        .and_then(|reference_id| {
-          self.scope.symbol_id_for(
-            reference_id,
-            self.ctx.symbol_db.this_method_should_be_removed_get_symbol_table(self.ctx.module.idx),
-          )
-        })
+        .and_then(|reference_id| self.scope.symbol_id_for(reference_id))
         .map(|symbol_id| (self.ctx.module.idx, symbol_id).into())
         .and_then(|symbol_ref: SymbolRef| self.ctx.module.named_imports.get(&symbol_ref))
       {
@@ -97,22 +95,22 @@ impl<'ast> VisitMut<'ast> for IsolatingModuleFinalizer<'_, 'ast> {
               self.snippet.builder.alloc_static_member_expression(
                 ident.span,
                 self.snippet.id_ref_expr(namespace_object_ref.as_str(), SPAN),
-                self.snippet.builder.identifier_name(SPAN, imported.as_str()),
+                self
+                  .snippet
+                  .builder
+                  .identifier_name(SPAN, self.snippet.builder.atom(imported.as_str())),
                 false,
               ),
             );
           }
         }
-      };
+      }
     }
     walk_mut::walk_expression(self, expr);
   }
 
   fn visit_call_expression(&mut self, expr: &mut ast::CallExpression<'ast>) {
-    if expr.is_global_require_call(
-      self.scope,
-      self.ctx.symbol_db.this_method_should_be_removed_get_symbol_table(self.ctx.module.idx),
-    ) {
+    if expr.is_global_require_call(self.scope) {
       if let Some(ast::Argument::StringLiteral(request)) = expr.arguments.first_mut() {
         request.value = self.snippet.atom(self.get_importee_module(expr.span).stable_id());
       }
@@ -160,10 +158,13 @@ impl<'ast> IsolatingModuleFinalizer<'_, 'ast> {
           self.snippet.id_ref_expr(from, SPAN),
           false,
         ));
-        self
-          .snippet
-          .builder
-          .statement_expression(SPAN, Expression::FunctionExpression(func.take_in(self.alloc)))
+        self.snippet.builder.statement_expression(
+          SPAN,
+          Expression::FunctionExpression(ArenaBox::new_in(
+            func.as_mut().take_in(self.alloc),
+            self.alloc,
+          )),
+        )
       }
       ast::ExportDefaultDeclarationKind::ClassDeclaration(class) => {
         let from = class.id.as_ref().map_or(default_export_ref, |ident| ident.name.as_str());
@@ -172,10 +173,13 @@ impl<'ast> IsolatingModuleFinalizer<'_, 'ast> {
           self.snippet.id_ref_expr(from, SPAN),
           false,
         ));
-        self
-          .snippet
-          .builder
-          .statement_expression(SPAN, Expression::ClassExpression(class.take_in(self.alloc)))
+        self.snippet.builder.statement_expression(
+          SPAN,
+          Expression::ClassExpression(ArenaBox::new_in(
+            class.as_mut().take_in(self.alloc),
+            self.alloc,
+          )),
+        )
       }
       ast::ExportDefaultDeclarationKind::TSInterfaceDeclaration(_) => {
         unreachable!("ExportDefaultDeclaration TSInterfaceDeclaration should be removed")
@@ -188,124 +192,124 @@ impl<'ast> IsolatingModuleFinalizer<'_, 'ast> {
     &mut self,
     export_named_decl: &mut ast::ExportNamedDeclaration<'ast>,
   ) -> Option<Statement<'ast>> {
-    match &export_named_decl.source {
-      Some(_) => {
-        let module = self.get_importee_module(export_named_decl.span);
-        let namespace_object_ref = self.create_namespace_object_ref_for_module(module);
-        self.create_require_call_stmt(
-          &module.stable_id().into(),
-          self.get_interop(module),
-          &namespace_object_ref,
-          export_named_decl.span,
-        );
+    if export_named_decl.source.is_some() {
+      let module = self.get_importee_module(export_named_decl.span);
+      let namespace_object_ref = self.create_namespace_object_ref_for_module(module);
+      self.create_require_call_stmt(
+        &module.stable_id().into(),
+        self.get_interop(module),
+        &namespace_object_ref,
+        export_named_decl.span,
+      );
 
-        self.generated_exports.extend(export_named_decl.specifiers.iter().map(|specifier| {
-          self.snippet.object_property_kind_object_property(
-            &specifier.exported.name(),
-            match &specifier.local {
-              ast::ModuleExportName::IdentifierName(ident) => {
-                Expression::StaticMemberExpression(
-                  self.snippet.builder.alloc_static_member_expression(
-                    SPAN,
-                    self.snippet.id_ref_expr(&namespace_object_ref, SPAN),
-                    self.snippet.builder.identifier_name(SPAN, ident.name.as_str()),
-                    false,
-                  ),
-                )
-              }
-              ast::ModuleExportName::StringLiteral(str) => {
-                Expression::ComputedMemberExpression(
-                  self.snippet.builder.alloc_computed_member_expression(
-                    SPAN,
-                    self.snippet.id_ref_expr(&namespace_object_ref, SPAN),
-                    self.snippet.builder.expression_string_literal(
-                      SPAN, str.value.as_str(), None
-                    ),
-                    false,
-                  ),
-                )
-              }
-              ast::ModuleExportName::IdentifierReference(_) => {
-                unreachable!(
-                  "ModuleExportName IdentifierReference is invalid in ExportNamedDeclaration with source"
-                )
-              }
-            },
-            matches!(specifier.exported, ast::ModuleExportName::StringLiteral(_))
-          )
-        }));
-        None
-      }
-      None => {
-        if let Some(decl) = &mut export_named_decl.declaration {
-          match decl {
-            ast::Declaration::VariableDeclaration(var_decl) => {
-              self.generated_exports.extend(var_decl.declarations.iter().filter_map(|decl| {
-                decl.id.get_identifier_name().map(|ident| {
-                  self.snippet.object_property_kind_object_property(
-                    ident.as_str(),
-                    self.snippet.id_ref_expr(ident.as_str(), SPAN),
-                    false,
-                  )
-                })
-              }));
-
-              return Some(ast::Statement::VariableDeclaration(
-                self.snippet.builder.alloc_variable_declaration(
+      self.generated_exports.extend(export_named_decl.specifiers.iter().map(|specifier| {
+        self.snippet.object_property_kind_object_property(
+          &specifier.exported.name(),
+          match &specifier.local {
+            ast::ModuleExportName::IdentifierName(ident) => {
+              Expression::StaticMemberExpression(
+                self.snippet.builder.alloc_static_member_expression(
                   SPAN,
-                  var_decl.kind,
-                  var_decl.declarations.take_in(self.alloc),
+                  self.snippet.id_ref_expr(&namespace_object_ref, SPAN),
+                  self.snippet.builder.identifier_name(SPAN, ident.name.as_str()),
                   false,
                 ),
-              ));
+              )
             }
-            ast::Declaration::FunctionDeclaration(func_decl) => {
-              let from =
-                func_decl.id.as_ref().expect("FunctionDeclaration should have ident").name.as_str();
-              self.generated_exports.push(self.snippet.object_property_kind_object_property(
-                from,
-                self.snippet.id_ref_expr(from, SPAN),
-                false,
-              ));
-              return Some(self.snippet.builder.statement_expression(
-                SPAN,
-                Expression::FunctionExpression(func_decl.take_in(self.alloc)),
-              ));
+            ast::ModuleExportName::StringLiteral(str) => {
+              Expression::ComputedMemberExpression(
+                self.snippet.builder.alloc_computed_member_expression(
+                  SPAN,
+                  self.snippet.id_ref_expr(&namespace_object_ref, SPAN),
+                  self.snippet.builder.expression_string_literal(
+                    SPAN, str.value.as_str(), None
+                  ),
+                  false,
+                ),
+              )
             }
-            ast::Declaration::ClassDeclaration(class_decl) => {
-              let from =
-                class_decl.id.as_ref().expect("ClassDeclaration should have ident").name.as_str();
-              self.generated_exports.push(self.snippet.object_property_kind_object_property(
-                from,
-                self.snippet.id_ref_expr(from, SPAN),
-                false,
-              ));
-              return Some(self.snippet.builder.statement_expression(
-                SPAN,
-                Expression::ClassExpression(class_decl.take_in(self.alloc)),
-              ));
+            ast::ModuleExportName::IdentifierReference(_) => {
+              unreachable!(
+                "ModuleExportName IdentifierReference is invalid in ExportNamedDeclaration with source"
+              )
             }
-            _ => {}
-          }
-        }
+          },
+          matches!(specifier.exported, ast::ModuleExportName::StringLiteral(_))
+        )
+      }));
 
-        self.generated_exports.extend(export_named_decl.specifiers.iter().map(|specifier| {
-          self.snippet.object_property_kind_object_property(
-            &specifier.exported.name(),
-            match &specifier.local {
-              ast::ModuleExportName::IdentifierName(ident) => {
-                self.snippet.id_ref_expr(ident.name.as_str(), SPAN)
-              }
-              ast::ModuleExportName::StringLiteral(_) => {
-                unreachable!("ModuleExportName StringLiteral is invalid in ExportNamedDeclaration without source")
-              }
-              ast::ModuleExportName::IdentifierReference(ident) => {
-                self.snippet.id_ref_expr(ident.name.as_str(), SPAN)
-              }
-            },
-            matches!(specifier.exported, ast::ModuleExportName::StringLiteral(_)
-          ))
+      return None;
+    }
+
+    match &mut export_named_decl.declaration {
+      Some(ast::Declaration::VariableDeclaration(var_decl)) => {
+        self.generated_exports.extend(var_decl.declarations.iter().filter_map(|decl| {
+          decl.id.get_identifier_name().map(|ident| {
+            self.snippet.object_property_kind_object_property(
+              ident.as_str(),
+              self.snippet.id_ref_expr(ident.as_str(), SPAN),
+              false,
+            )
+          })
         }));
+
+        Some(ast::Statement::VariableDeclaration(self.snippet.builder.alloc_variable_declaration(
+          SPAN,
+          var_decl.kind,
+          var_decl.declarations.take_in(self.alloc),
+          false,
+        )))
+      }
+      Some(ast::Declaration::FunctionDeclaration(func_decl)) => {
+        let from =
+          func_decl.id.as_ref().expect("FunctionDeclaration should have ident").name.as_str();
+        self.generated_exports.push(self.snippet.object_property_kind_object_property(
+          from,
+          self.snippet.id_ref_expr(from, SPAN),
+          false,
+        ));
+        Some(self.snippet.builder.statement_expression(
+          SPAN,
+          Expression::FunctionExpression(ArenaBox::new_in(
+            func_decl.as_mut().take_in(self.alloc),
+            self.alloc,
+          )),
+        ))
+      }
+      Some(ast::Declaration::ClassDeclaration(class_decl)) => {
+        let from =
+          class_decl.id.as_ref().expect("ClassDeclaration should have ident").name.as_str();
+        self.generated_exports.push(self.snippet.object_property_kind_object_property(
+          from,
+          self.snippet.id_ref_expr(from, SPAN),
+          false,
+        ));
+        Some(self.snippet.builder.statement_expression(
+          SPAN,
+          Expression::ClassExpression(ArenaBox::new_in(
+            class_decl.as_mut().take_in(self.alloc),
+            self.alloc,
+          )),
+        ))
+      }
+      _ => {
+        self.generated_exports.extend(export_named_decl.specifiers.iter().map(|specifier| {
+            self.snippet.object_property_kind_object_property(
+              &specifier.exported.name(),
+              match &specifier.local {
+                ast::ModuleExportName::IdentifierName(ident) => {
+                  self.snippet.id_ref_expr(ident.name.as_str(), SPAN)
+                }
+                ast::ModuleExportName::StringLiteral(_) => {
+                  unreachable!("ModuleExportName StringLiteral is invalid in ExportNamedDeclaration without source")
+                }
+                ast::ModuleExportName::IdentifierReference(ident) => {
+                  self.snippet.id_ref_expr(ident.name.as_str(), SPAN)
+                }
+              },
+              matches!(specifier.exported, ast::ModuleExportName::StringLiteral(_)
+            ))
+          }));
         None
       }
     }
@@ -375,7 +379,7 @@ impl<'ast> IsolatingModuleFinalizer<'_, 'ast> {
       }
       Module::External(external_module) => {
         // TODO need to generate one symbol and deconflict it
-        legitimize_identifier_name(&external_module.name).into()
+        external_module.identifier_name.as_str().into()
       }
     }
   }

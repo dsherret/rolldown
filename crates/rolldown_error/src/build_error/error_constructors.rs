@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::BuildDiagnostic;
 use super::severity::Severity;
@@ -11,6 +11,7 @@ use crate::events::DiagnosableArcstr;
 #[cfg(feature = "napi")]
 use crate::events::NapiError;
 use crate::events::assign_to_import::AssignToImport;
+use crate::events::configuration_field_conflict::ConfigurationFieldConflict;
 use crate::events::export_undefined_variable::ExportUndefinedVariable;
 use crate::events::filename_conflict::FilenameConflict;
 use crate::events::illegal_identifier_as_name::IllegalIdentifierAsName;
@@ -36,10 +37,7 @@ use crate::events::{
   missing_export::MissingExport,
   mixed_export::MixedExport,
   parse_error::ParseError,
-  sourcemap_error::SourceMapError,
   unresolved_entry::UnresolvedEntry,
-  unresolved_import::UnresolvedImport,
-  unresolved_import_treated_as_external::UnresolvedImportTreatedAsExternal,
 };
 use crate::line_column_to_byte_offset;
 
@@ -73,19 +71,22 @@ impl BuildDiagnostic {
     })
   }
 
-  pub fn unresolved_import(specifier: impl Into<String>, importer: impl Into<PathBuf>) -> Self {
-    Self::new_inner(UnresolvedImport { specifier: specifier.into(), importer: importer.into() })
-  }
-
   pub fn resolve_error(
     source: ArcStr,
     importer_id: ArcStr,
     importee: DiagnosableArcstr,
     reason: String,
-    title: Option<&'static str>,
+    diagnostic_kind: crate::event_kind::EventKind,
     help: Option<String>,
   ) -> Self {
-    Self::new_inner(DiagnosableResolveError { source, importer_id, importee, reason, title, help })
+    Self::new_inner(DiagnosableResolveError {
+      source,
+      importer_id,
+      importee,
+      reason,
+      help,
+      diagnostic_kind,
+    })
   }
 
   pub fn unloadable_dependency(
@@ -98,27 +99,12 @@ impl BuildDiagnostic {
     })
   }
 
-  pub fn sourcemap_error(error: oxc_sourcemap::Error) -> Self {
-    Self::new_inner(SourceMapError { error })
-  }
-
   pub fn circular_dependency(paths: Vec<String>) -> Self {
     Self::new_inner(CircularDependency { paths })
   }
 
-  pub fn unresolved_import_treated_as_external(
-    specifier: impl Into<String>,
-    importer: impl Into<PathBuf>,
-    resolve_error: Option<ResolveError>,
-  ) -> Self {
-    Self::new_inner(UnresolvedImportTreatedAsExternal {
-      specifier: specifier.into(),
-      importer: importer.into(),
-      resolve_error,
-    })
-  }
-
   pub fn missing_export(
+    importer: String,
     stable_importer: String,
     stable_importee: String,
     importer_source: ArcStr,
@@ -126,6 +112,7 @@ impl BuildDiagnostic {
     imported_specifier_span: Span,
   ) -> Self {
     Self::new_inner(MissingExport {
+      importer,
       stable_importer,
       stable_importee,
       importer_source,
@@ -134,12 +121,17 @@ impl BuildDiagnostic {
     })
   }
 
-  pub fn mixed_export(module_name: ArcStr, entry_module: ArcStr, export_keys: Vec<ArcStr>) -> Self {
-    Self::new_inner(MixedExport { module_name, entry_module, export_keys })
+  pub fn mixed_export(
+    module_id: String,
+    module_name: ArcStr,
+    entry_module: String,
+    export_keys: Vec<ArcStr>,
+  ) -> Self {
+    Self::new_inner(MixedExport { module_id, module_name, entry_module, export_keys })
   }
 
-  pub fn missing_global_name(module_name: ArcStr, guessed_name: ArcStr) -> Self {
-    Self::new_inner(MissingGlobalName { module_name, guessed_name })
+  pub fn missing_global_name(module_id: String, module_name: ArcStr, guessed_name: ArcStr) -> Self {
+    Self::new_inner(MissingGlobalName { module_id, module_name, guessed_name })
   }
 
   pub fn missing_name_option_for_iife_export() -> Self {
@@ -262,6 +254,20 @@ impl BuildDiagnostic {
 
   pub fn eval(filename: String, source: ArcStr, span: Span) -> Self {
     Self::new_inner(Eval { filename, span, source })
+  }
+
+  pub fn configuration_field_conflict(
+    a_config_name: &str,
+    a_field_name: &str,
+    b_config_name: &str,
+    b_field_name: &str,
+  ) -> Self {
+    Self::new_inner(ConfigurationFieldConflict {
+      a_field: a_field_name.to_string(),
+      a_config_name: a_config_name.to_string(),
+      b_field: b_field_name.to_string(),
+      b_config_name: b_config_name.to_string(),
+    })
   }
 
   pub fn export_undefined_variable(

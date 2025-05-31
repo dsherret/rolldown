@@ -6,13 +6,12 @@ use oxc::span::CompactStr;
 // TODO: The current implementation for matching imports is enough so far but incomplete. It needs to be refactored
 // if we want more enhancements related to exports.
 use rolldown_common::{
-  EcmaModuleAstUsage, ExportsKind, IndexModules, Module, ModuleIdx, ModuleType, NamespaceAlias,
-  NormalModule, OutputFormat, ResolvedExport, Specifier, SymbolOrMemberExprRef, SymbolRef,
-  SymbolRefDb,
+  EcmaModuleAstUsage, ExportsKind, IndexModules, MemberExprRefResolution, Module, ModuleIdx,
+  ModuleType, NamespaceAlias, NormalModule, OutputFormat, ResolvedExport, Specifier,
+  SymbolOrMemberExprRef, SymbolRef, SymbolRefDb,
 };
 use rolldown_error::{AmbiguousExternalNamespaceModule, BuildDiagnostic};
 use rolldown_rstr::{Rstr, ToRstr};
-use rolldown_std_utils::OptionExt;
 use rolldown_utils::{
   ecmascript::{is_validate_identifier_name, legitimize_identifier_name},
   index_vec_ext::IndexVecExt,
@@ -126,7 +125,7 @@ impl LinkStage<'_> {
   pub(super) fn bind_imports_and_exports(&mut self) {
     // Initialize `resolved_exports` to prepare for matching imports with exports
     self.metas.par_iter_mut_enumerated().for_each(|(module_id, meta)| {
-      let Module::Normal(module) = &self.module_table.modules[module_id] else {
+      let Module::Normal(module) = &self.module_table[module_id] else {
         return;
       };
       let mut resolved_exports = module
@@ -211,7 +210,7 @@ impl LinkStage<'_> {
               continue 'next_export;
             }
           }
-        };
+        }
         sorted_and_non_ambiguous_resolved_exports.push(exported_name.clone());
       }
       sorted_and_non_ambiguous_resolved_exports.sort_unstable();
@@ -219,6 +218,7 @@ impl LinkStage<'_> {
     });
     self.resolve_member_expr_refs(&side_effects_modules, &normal_symbol_exports_chain_map);
     self.update_cjs_module_meta();
+    self.normal_symbol_exports_chain_map = normal_symbol_exports_chain_map;
   }
 
   /// Update the metadata of CommonJS modules.
@@ -257,10 +257,10 @@ impl LinkStage<'_> {
         Entry::Vacant(vac) => {
           vac.insert(CacheStatus::Seen);
         }
-      };
+      }
       let module = module_tables[module_idx].as_normal().unwrap();
       let v = if module.ast_usage.contains(EcmaModuleAstUsage::IsCjsReexport) {
-        module.import_records.iter().filter(|item| !item.is_dummy()).all(|item| {
+        module.import_records.iter().all(|item| {
           let Some(importee) = module_tables[item.resolved_module].as_normal() else {
             return false;
           };
@@ -376,6 +376,7 @@ impl LinkStage<'_> {
   /// export const c = 1;
   /// ```
   /// The final pointed `SymbolRef` of `foo_ns.bar_ns.c` is the `c` in `bar.js`.
+  #[expect(clippy::too_many_lines)]
   fn resolve_member_expr_refs(
     &mut self,
     side_effects_modules: &FxHashSet<ModuleIdx>,
@@ -392,11 +393,14 @@ impl LinkStage<'_> {
           let mut side_effects_dependency = vec![];
           module.stmt_infos.iter().for_each(|stmt_info| {
             stmt_info.referenced_symbols.iter().for_each(|symbol_ref| {
+              // `depended_refs` is used to store necessary symbols that must be included once the resolved symbol gets included
+              let mut depended_refs: Vec<SymbolRef> = vec![];
+
               if let SymbolOrMemberExprRef::MemberExpr(member_expr_ref) = symbol_ref {
                 // First get the canonical ref of `foo_ns`, then we get the `NormalModule#namespace_object_ref` of `foo.js`.
                 let mut canonical_ref = self.symbols.canonical_ref_for(member_expr_ref.object_ref);
                 let mut canonical_ref_owner: &NormalModule =
-                  match &self.module_table.modules[canonical_ref.owner] {
+                  match &self.module_table[canonical_ref.owner] {
                     Module::Normal(module) => module,
                     Module::External(_) => return,
                   };
@@ -415,7 +419,11 @@ impl LinkStage<'_> {
                     if !self.metas[canonical_ref_owner.idx].has_dynamic_exports {
                       resolved_map.insert(
                         member_expr_ref.span,
-                        (None, member_expr_ref.props[cursor..].to_vec()),
+                        MemberExprRefResolution {
+                          resolved: None,
+                          props: member_expr_ref.props[cursor..].to_vec(),
+                          depended_refs: vec![],
+                        },
                       );
                       warnings.push(
                         BuildDiagnostic::import_is_undefined(
@@ -433,13 +441,17 @@ impl LinkStage<'_> {
                   if !meta.sorted_and_non_ambiguous_resolved_exports.contains(&name.to_rstr()) {
                     resolved_map.insert(
                       member_expr_ref.span,
-                      (None, member_expr_ref.props[cursor..].to_vec()),
+                      MemberExprRefResolution {
+                        resolved: None,
+                        props: member_expr_ref.props[cursor..].to_vec(),
+                        depended_refs: vec![],
+                      },
                     );
                     return;
-                  };
+                  }
 
                   // TODO(hyf0): suspicious cjs might just fallback to dynamic lookup?
-                  if !self.module_table.modules[export_symbol.symbol_ref.owner]
+                  if !self.module_table[export_symbol.symbol_ref.owner]
                     .as_normal()
                     .unwrap()
                     .exports_kind
@@ -447,9 +459,11 @@ impl LinkStage<'_> {
                   {
                     break;
                   }
+                  depended_refs.push(export_symbol.symbol_ref);
                   if let Some(chains) =
                     normal_symbol_exports_chain_map.get(&export_symbol.symbol_ref)
                   {
+                    depended_refs.extend(chains);
                     for item in chains {
                       if side_effects_modules.contains(&item.owner) {
                         side_effects_dependency.push(item.owner);
@@ -458,15 +472,26 @@ impl LinkStage<'_> {
                   }
                   ns_symbol_list.push((canonical_ref, name.to_rstr()));
                   canonical_ref = self.symbols.canonical_ref_for(export_symbol.symbol_ref);
-                  canonical_ref_owner =
-                    self.module_table.modules[canonical_ref.owner].as_normal().unwrap();
+                  canonical_ref_owner = self.module_table[canonical_ref.owner].as_normal().unwrap();
                   cursor += 1;
                   is_namespace_ref = canonical_ref_owner.namespace_object_ref == canonical_ref;
                 }
                 if cursor > 0 {
+                  // The module namespace might be created in the other module get imported via named import instead of `import * as`.
+                  // We need to include the possible export chain.
+                  depended_refs.push(member_expr_ref.object_ref);
+                  normal_symbol_exports_chain_map.get(&member_expr_ref.object_ref).inspect(
+                    |refs| {
+                      depended_refs.extend(*refs);
+                    },
+                  );
                   resolved_map.insert(
                     member_expr_ref.span,
-                    (Some(canonical_ref), member_expr_ref.props[cursor..].to_vec()),
+                    MemberExprRefResolution {
+                      resolved: Some(canonical_ref),
+                      props: member_expr_ref.props[cursor..].to_vec(),
+                      depended_refs,
+                    },
                   );
                 }
               }
@@ -481,8 +506,8 @@ impl LinkStage<'_> {
 
     debug_assert_eq!(self.metas.len(), resolved_meta_data.len());
     self.warnings.extend(warnings);
-    self.metas.iter_mut_enumerated().zip(resolved_meta_data).for_each(
-      |((_idx, meta), (resolved_map, side_effects_dependency))| {
+    self.metas.iter_mut().zip(resolved_meta_data).for_each(
+      |(meta, (resolved_map, side_effects_dependency))| {
         meta.resolved_member_expr_refs = resolved_map;
         meta.dependencies.extend(side_effects_dependency);
       },
@@ -560,7 +585,8 @@ impl BindImportsAndExportsContext<'_> {
               let named_export = &owner.named_exports[name];
               exporter.push(AmbiguousExternalNamespaceModule {
                 source: owner.source.clone(),
-                filename: owner.stable_id.to_string(),
+                module_id: owner.id.to_string(),
+                stable_id: owner.stable_id.to_string(),
                 span_of_identifier: named_export.span,
               });
             }
@@ -572,7 +598,8 @@ impl BindImportsAndExportsContext<'_> {
               let named_export = &normal_module.named_exports[name];
               return Some(AmbiguousExternalNamespaceModule {
                 source: normal_module.source.clone(),
-                filename: normal_module.stable_id.to_string(),
+                module_id: normal_module.id.to_string(),
+                stable_id: normal_module.stable_id.to_string(),
                 span_of_identifier: named_export.span,
               });
             }
@@ -585,7 +612,8 @@ impl BindImportsAndExportsContext<'_> {
             importee,
             AmbiguousExternalNamespaceModule {
               source: module.source.clone(),
-              filename: module.stable_id.to_string(),
+              module_id: module.id.to_string(),
+              stable_id: module.stable_id.to_string(),
               span_of_identifier: named_import.span_imported,
             },
             exporter,
@@ -610,13 +638,20 @@ impl BindImportsAndExportsContext<'_> {
         }
         MatchImportKind::NoMatch => {
           let importee = &self.index_modules[rec.resolved_module];
-          self.errors.push(BuildDiagnostic::missing_export(
+          let mut diagnostic = BuildDiagnostic::missing_export(
+            module.id.to_string(),
             module.stable_id.to_string(),
             importee.stable_id().to_string(),
             module.source.clone(),
             named_import.imported.to_string(),
             named_import.span_imported,
-          ));
+          );
+          if let Some(importee) = importee.as_normal() {
+            if matches!(importee.module_type, ModuleType::Ts | ModuleType::Tsx) {
+              diagnostic = diagnostic.with_severity_warning();
+            }
+          }
+          self.errors.push(diagnostic);
         }
       }
     }
@@ -710,23 +745,17 @@ impl BindImportsAndExportsContext<'_> {
       let importer = &self.index_modules[tracker.importer];
       let named_import = &importer.as_normal().unwrap().named_imports[&tracker.imported_as];
       let importer_record = &importer.as_normal().unwrap().import_records[named_import.record_id];
-      let importee = &self.index_modules[importer_record.resolved_module];
 
       let kind = match import_status {
-        ImportStatus::CommonJS => {
-          let esm_namespace = if importer.as_normal().unpack().should_consider_node_esm_spec() {
-            importee.as_normal().unpack().esm_namespace_in_cjs_node_mode.unpack_ref().namespace_ref
-          } else {
-            importee.as_normal().unpack().esm_namespace_in_cjs.unpack_ref().namespace_ref
-          };
-          match &tracker.imported {
-            Specifier::Star => MatchImportKind::Namespace { namespace_ref: esm_namespace },
-            Specifier::Literal(alias) => MatchImportKind::NormalAndNamespace {
-              namespace_ref: esm_namespace,
-              alias: alias.clone(),
-            },
+        ImportStatus::CommonJS => match &tracker.imported {
+          Specifier::Star => {
+            MatchImportKind::Namespace { namespace_ref: importer_record.namespace_ref }
           }
-        }
+          Specifier::Literal(alias) => MatchImportKind::NormalAndNamespace {
+            namespace_ref: importer_record.namespace_ref,
+            alias: alias.clone(),
+          },
+        },
         ImportStatus::DynamicFallback { namespace_ref } => match &tracker.imported {
           Specifier::Star => MatchImportKind::Namespace { namespace_ref },
           Specifier::Literal(alias) => {

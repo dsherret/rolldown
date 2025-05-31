@@ -1,16 +1,15 @@
 use itertools::Itertools;
-use oxc::allocator::{Address, Allocator};
+use oxc::allocator::{Address, Allocator, TakeIn};
 use oxc::ast::NONE;
 use oxc::ast::ast::{self, BindingPatternKind, Declaration, ImportOrExportKind, Statement};
 use oxc::ast_visit::{VisitMut, walk_mut};
 use oxc::span::{SPAN, Span};
-use rolldown_ecmascript_utils::{AstSnippet, StatementExt, TakeIn};
+use rolldown_ecmascript_utils::{AstSnippet, StatementExt};
 use rustc_hash::FxHashMap;
 
 /// Pre-process is a essential step to make rolldown generate correct and efficient code.
 pub struct PreProcessor<'ast> {
   snippet: AstSnippet<'ast>,
-  pub contains_use_strict: bool,
   /// used to store none_hoisted statements.
   top_level_stmt_temp_storage: Vec<Statement<'ast>>,
   keep_names: bool,
@@ -22,7 +21,6 @@ impl<'ast> PreProcessor<'ast> {
   pub fn new(alloc: &'ast Allocator, keep_names: bool) -> Self {
     Self {
       snippet: AstSnippet::new(alloc),
-      contains_use_strict: false,
       top_level_stmt_temp_storage: vec![],
       keep_names,
       statement_stack: vec![],
@@ -68,15 +66,6 @@ impl<'ast> PreProcessor<'ast> {
 
 impl<'ast> VisitMut<'ast> for PreProcessor<'ast> {
   fn visit_program(&mut self, program: &mut ast::Program<'ast>) {
-    program.directives.retain(|directive| {
-      let is_use_strict = directive.is_use_strict();
-      if is_use_strict {
-        self.contains_use_strict = true;
-        false
-      } else {
-        true
-      }
-    });
     let original_body = program.body.take_in(self.snippet.alloc());
     program.body.reserve_exact(original_body.len());
     self.top_level_stmt_temp_storage = Vec::with_capacity(
@@ -140,20 +129,20 @@ impl<'ast> VisitMut<'ast> for PreProcessor<'ast> {
 
   fn visit_export_named_declaration(&mut self, named_decl: &mut ast::ExportNamedDeclaration<'ast>) {
     walk_mut::walk_export_named_declaration(self, named_decl);
-    let named_decl_span = named_decl.span;
 
     let Some(Declaration::VariableDeclaration(ref mut var_decl)) = named_decl.declaration else {
       return;
     };
 
-    if var_decl
-      .declarations
-      .iter()
-      // TODO: support nested destructuring tree shake, `export const {a, b} = obj; export const
-      // [a, b] = arr;`
-      .any(|declarator| matches!(declarator.id.kind, BindingPatternKind::BindingIdentifier(_)))
+    if var_decl.declarations.len() > 1
+      && var_decl
+        .declarations
+        .iter()
+        // TODO: support nested destructuring tree shake, `export const {a, b} = obj; export const
+        // [a, b] = arr;`
+        .any(|declarator| matches!(declarator.id.kind, BindingPatternKind::BindingIdentifier(_)))
     {
-      let rewritten = self.split_var_declaration(var_decl, Some(named_decl_span));
+      let rewritten = self.split_var_declaration(var_decl, Some(named_decl.span));
       self.statement_replace_map.insert(self.statement_stack.last().copied().unwrap(), rewritten);
     }
   }
@@ -197,7 +186,7 @@ impl<'ast> VisitMut<'ast> for PreProcessor<'ast> {
         }
       }
       // transpose `import(test ? 'a' : 'b')` into `test ? import('a') : import('b')`
-      ast::Expression::ImportExpression(expr) if expr.arguments.is_empty() => {
+      ast::Expression::ImportExpression(expr) if expr.options.is_none() => {
         let source = &mut expr.source;
         match source {
           ast::Expression::ConditionalExpression(cond_expr) => {
@@ -208,18 +197,8 @@ impl<'ast> VisitMut<'ast> for PreProcessor<'ast> {
             let new_cond_expr = self.snippet.builder.expression_conditional(
               SPAN,
               test,
-              self.snippet.builder.expression_import(
-                SPAN,
-                consequent,
-                self.snippet.builder.vec(),
-                None,
-              ),
-              self.snippet.builder.expression_import(
-                SPAN,
-                alternative,
-                self.snippet.builder.vec(),
-                None,
-              ),
+              self.snippet.builder.expression_import(SPAN, consequent, None, None),
+              self.snippet.builder.expression_import(SPAN, alternative, None, None),
             );
 
             Some(new_cond_expr)

@@ -1,0 +1,67 @@
+{
+  "name": "@rolldown/browser",
+  "version": "1.0.0-beta.10",
+  "description": "Fast JavaScript/TypeScript bundler in Rust with Rollup-compatible API.",
+  "homepage": "https://rolldown.rs/",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rolldown/rolldown.git",
+    "directory": "packages/browser"
+  },
+  "license": "MIT",
+  "keywords": [
+    "webpack",
+    "parcel",
+    "esbuild",
+    "rollup",
+    "bundler",
+    "rolldown"
+  ],
+  "files": [
+    "bin",
+    "dist",
+    "!*/.tsbuildinfo"
+  ],
+  "bin": {
+    "rolldown": "./bin/cli.mjs"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.cts",
+  "exports": {
+    ".": {
+      "browser": "./dist/index.browser.mjs",
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.mjs"
+    },
+    "./experimental": {
+      "browser": "./dist/experimental-index.browser.mjs",
+      "require": "./dist/experimental-index.cjs",
+      "import": "./dist/experimental-index.mjs"
+    },
+    "./parallel-plugin": {
+      "require": "./dist/parallel-plugin.cjs",
+      "import": "./dist/parallel-plugin.mjs"
+    },
+    "./parseAst": {
+      "require": "./dist/parse-ast-index.cjs",
+      "import": "./dist/parse-ast-index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "scripts": {
+    "build": "pnpm run build:debug",
+    "build:debug": "pnpm run --filter rolldown build-browser:debug",
+    "build:release": "pnpm run --filter rolldown build-browser:release",
+    "build-node": "BROWSER_PKG=1 pnpm run --filter rolldown build-node",
+    "preinstall": "npx only-allow pnpm"
+  },
+  "dependencies": {
+    "@napi-rs/wasm-runtime": "^0.2.8"
+  }
+}

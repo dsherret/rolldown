@@ -1,23 +1,23 @@
-import { BindingLogLevel } from '../binding'
-import { bindingifyPlugin } from '../plugin/bindingify-plugin'
-import { PluginContextData } from '../plugin/plugin-context-data'
-import { bindingifyBuiltInPlugin } from '../builtin-plugin/utils'
-import { BuiltinPlugin } from '../builtin-plugin/constructors'
-import { arraify } from './misc'
-import { normalizedStringOrRegex } from './normalize-string-or-regex'
-import type { RolldownPlugin } from '../plugin'
-import type { InputOptions } from '../options/input-options'
-import type { OutputOptions } from '../options/output-options'
+import { BindingJsx, BindingLogLevel } from '../binding';
 import type {
-  BindingWatchOption,
-  BindingInputOptions,
+  BindingDeferSyncScanData,
+  BindingExperimentalOptions,
   BindingInjectImportNamed,
   BindingInjectImportNamespace,
-  BindingDeferSyncScanData,
-} from '../binding'
-import { LogHandler } from '../types/misc'
-import { LogLevelOption } from '../log/logging'
-import { bindingifySideEffects } from './transform-side-effects'
+  BindingInputOptions,
+} from '../binding';
+import { BuiltinPlugin } from '../builtin-plugin/constructors';
+import { bindingifyBuiltInPlugin } from '../builtin-plugin/utils';
+import type { LogHandler } from '../log/log-handler';
+import type { LogLevelOption } from '../log/logging';
+import type { HmrOptions, InputOptions } from '../options/input-options';
+import type { OutputOptions } from '../options/output-options';
+import type { RolldownPlugin } from '../plugin';
+import { bindingifyPlugin } from '../plugin/bindingify-plugin';
+import { PluginContextData } from '../plugin/plugin-context-data';
+import { arraify } from './misc';
+import { normalizedStringOrRegex } from './normalize-string-or-regex';
+import { bindingifySideEffects } from './transform-side-effects';
 
 export function bindingifyInputOptions(
   rawPlugins: RolldownPlugin[],
@@ -26,15 +26,16 @@ export function bindingifyInputOptions(
   normalizedOutputPlugins: RolldownPlugin[],
   onLog: LogHandler,
   logLevel: LogLevelOption,
+  watchMode: boolean,
 ): BindingInputOptions {
-  const pluginContextData = new PluginContextData()
+  const pluginContextData = new PluginContextData();
 
   const plugins = rawPlugins.map((plugin) => {
     if ('_parallel' in plugin) {
-      return undefined
+      return undefined;
     }
     if (plugin instanceof BuiltinPlugin) {
-      return bindingifyBuiltInPlugin(plugin)
+      return bindingifyBuiltInPlugin(plugin);
     }
     return bindingifyPlugin(
       plugin,
@@ -44,8 +45,9 @@ export function bindingifyInputOptions(
       normalizedOutputPlugins,
       onLog,
       logLevel,
-    )
-  })
+      watchMode,
+    );
+  });
 
   return {
     input: bindingifyInput(inputOptions.input),
@@ -71,26 +73,47 @@ export function bindingifyInputOptions(
       disableLiveBindings: inputOptions.experimental?.disableLiveBindings,
       viteMode: inputOptions.experimental?.viteMode,
       resolveNewUrlToAsset: inputOptions.experimental?.resolveNewUrlToAsset,
-      hmr: inputOptions.experimental?.hmr,
+      hmr: bindingifyHmr(inputOptions.experimental?.hmr),
+      attachDebugInfo: inputOptions.experimental?.attachDebugInfo,
     },
     profilerNames: inputOptions?.profilerNames,
     jsx: bindingifyJsx(inputOptions.jsx),
+    transform: inputOptions.transform,
     watch: bindingifyWatch(inputOptions.watch),
     dropLabels: inputOptions.dropLabels,
     keepNames: inputOptions.keepNames,
     checks: inputOptions.checks,
     deferSyncScanData: () => {
-      let ret: BindingDeferSyncScanData[] = []
+      let ret: BindingDeferSyncScanData[] = [];
       pluginContextData.moduleOptionMap.forEach((value, key) => {
         if (value.invalidate) {
           ret.push({
             id: key,
             sideEffects: bindingifySideEffects(value.moduleSideEffects),
-          })
+          });
         }
-      })
-      return ret
+      });
+      return ret;
     },
+    makeAbsoluteExternalsRelative: bindingifyMakeAbsoluteExternalsRelative(
+      inputOptions.makeAbsoluteExternalsRelative,
+    ),
+    debug: inputOptions.debug,
+    invalidateJsSideCache: pluginContextData.clear.bind(pluginContextData),
+    markModuleLoaded: pluginContextData.markModuleLoaded.bind(
+      pluginContextData,
+    ),
+  };
+}
+
+function bindingifyHmr(
+  hmr?: HmrOptions,
+): BindingExperimentalOptions['hmr'] {
+  if (hmr) {
+    if (typeof hmr === 'boolean') {
+      return hmr ? {} : undefined;
+    }
+    return hmr;
   }
 }
 
@@ -100,19 +123,19 @@ function bindingifyExternal(
   if (external) {
     if (typeof external === 'function') {
       return (id, importer, isResolved) => {
-        if (id.startsWith('\0')) return false
-        return external(id, importer, isResolved) ?? false
-      }
+        if (id.startsWith('\0')) return false;
+        return external(id, importer, isResolved) ?? false;
+      };
     }
-    const externalArr = arraify(external)
+    const externalArr = arraify(external);
     return (id, _importer, _isResolved) => {
       return externalArr.some((pat) => {
         if (pat instanceof RegExp) {
-          return pat.test(id)
+          return pat.test(id);
         }
-        return id === pat
-      })
-    }
+        return id === pat;
+      });
+    };
   }
 }
 
@@ -120,23 +143,23 @@ function bindingifyResolve(
   resolve: InputOptions['resolve'],
 ): BindingInputOptions['resolve'] {
   if (resolve) {
-    const { alias, extensionAlias, ...rest } = resolve
+    const { alias, extensionAlias, ...rest } = resolve;
 
     return {
       alias: alias
         ? Object.entries(alias).map(([name, replacement]) => ({
-            find: name,
-            replacements: arraify(replacement),
-          }))
+          find: name,
+          replacements: arraify(replacement),
+        }))
         : undefined,
       extensionAlias: extensionAlias
         ? Object.entries(extensionAlias).map(([name, value]) => ({
-            target: name,
-            replacements: value,
-          }))
+          target: name,
+          replacements: value,
+        }))
         : undefined,
       ...rest,
-    }
+    };
   }
 }
 
@@ -147,7 +170,8 @@ function bindingifyInject(
     return Object.entries(inject).map(
       ([alias, item]):
         | BindingInjectImportNamed
-        | BindingInjectImportNamespace => {
+        | BindingInjectImportNamespace =>
+      {
         if (Array.isArray(item)) {
           // import * as fs from 'node:fs'
           // fs: ['node:fs', '*' ],
@@ -156,7 +180,7 @@ function bindingifyInject(
               tagNamespace: true,
               alias,
               from: item[0],
-            }
+            };
           }
 
           // import { Promise } from 'es6-promise'
@@ -169,7 +193,7 @@ function bindingifyInject(
             alias,
             from: item[0],
             imported: item[1],
-          }
+          };
         } else {
           // import $ from 'jquery'
           // $: 'jquery',
@@ -180,10 +204,10 @@ function bindingifyInject(
             imported: 'default',
             alias,
             from: item,
-          }
+          };
         }
       },
-    )
+    );
   }
 }
 
@@ -192,15 +216,15 @@ function bindingifyLogLevel(
 ): BindingInputOptions['logLevel'] {
   switch (logLevel) {
     case 'silent':
-      return BindingLogLevel.Silent
+      return BindingLogLevel.Silent;
     case 'debug':
-      return BindingLogLevel.Debug
+      return BindingLogLevel.Debug;
     case 'warn':
-      return BindingLogLevel.Warn
+      return BindingLogLevel.Warn;
     case 'info':
-      return BindingLogLevel.Info
+      return BindingLogLevel.Info;
     default:
-      throw new Error(`Unexpected log level: ${logLevel}`)
+      throw new Error(`Unexpected log level: ${logLevel}`);
   }
 }
 
@@ -208,48 +232,35 @@ function bindingifyInput(
   input: InputOptions['input'],
 ): BindingInputOptions['input'] {
   if (input === undefined) {
-    return []
+    return [];
   }
 
   if (typeof input === 'string') {
-    return [{ import: input }]
+    return [{ import: input }];
   }
 
   if (Array.isArray(input)) {
-    return input.map((src) => ({ import: src }))
+    return input.map((src) => ({ import: src }));
   }
 
-  return Object.entries(input).map((value) => {
-    return { name: value[0], import: value[1] }
-  })
+  return Object.entries(input).map(([name, import_path]) => {
+    return { name, import: import_path };
+  });
 }
 
 // The `automatic` is most user usages, so it is different rollup's default value `false`
 function bindingifyJsx(input: InputOptions['jsx']): BindingInputOptions['jsx'] {
-  if (input === false) {
-    return { type: 'Disable' }
-  }
-  if (input) {
-    if (input.mode === 'preserve') {
-      return { type: 'Preserve' }
-    }
-    const mode = input.mode ?? 'automatic'
-    return {
-      type: 'Enable',
-      field0: {
-        runtime: mode,
-        importSource:
-          mode === 'classic'
-            ? input.importSource
-            : mode === 'automatic'
-              ? input.jsxImportSource
-              : undefined,
-        pragma: input.factory,
-        pragmaFrag: input.fragment,
-        development: input.development,
-        refresh: input.refresh,
-      },
-    }
+  switch (input) {
+    case false:
+      return BindingJsx.Disable;
+    case 'react':
+      return BindingJsx.React;
+    case 'react-jsx':
+      return BindingJsx.ReactJsx;
+    case 'preserve':
+      return BindingJsx.Preserve;
+    default:
+      return undefined;
   }
 }
 
@@ -262,7 +273,7 @@ function bindingifyWatch(
       skipWrite: watch.skipWrite,
       include: normalizedStringOrRegex(watch.include),
       exclude: normalizedStringOrRegex(watch.exclude),
-    } as BindingWatchOption
+    };
   }
 }
 
@@ -270,28 +281,42 @@ function bindingifyTreeshakeOptions(
   config: InputOptions['treeshake'],
 ): BindingInputOptions['treeshake'] {
   if (config === false) {
-    return undefined
+    return undefined;
   }
+
   if (config === true || config === undefined) {
     return {
       moduleSideEffects: true,
-      annotations: true,
-    }
+    };
   }
+
   let normalizedConfig: BindingInputOptions['treeshake'] = {
     moduleSideEffects: true,
-  }
+    annotations: config.annotations,
+    manualPureFunctions: config.manualPureFunctions,
+    unknownGlobalSideEffects: config.unknownGlobalSideEffects,
+  };
   if (config.moduleSideEffects === undefined) {
-    normalizedConfig.moduleSideEffects = true
+    normalizedConfig.moduleSideEffects = true;
   } else if (config.moduleSideEffects === 'no-external') {
     normalizedConfig.moduleSideEffects = [
       { external: true, sideEffects: false },
       { external: false, sideEffects: true },
-    ]
+    ];
   } else {
-    normalizedConfig.moduleSideEffects = config.moduleSideEffects
+    normalizedConfig.moduleSideEffects = config.moduleSideEffects;
   }
 
-  normalizedConfig.annotations = config.annotations ?? true
-  return normalizedConfig
+  return normalizedConfig;
+}
+
+function bindingifyMakeAbsoluteExternalsRelative(
+  makeAbsoluteExternalsRelative: InputOptions['makeAbsoluteExternalsRelative'],
+): BindingInputOptions['makeAbsoluteExternalsRelative'] {
+  if (makeAbsoluteExternalsRelative === 'ifRelativeSource') {
+    return { type: 'IfRelativeSource' };
+  }
+  if (typeof makeAbsoluteExternalsRelative === 'boolean') {
+    return { type: 'Bool', field0: makeAbsoluteExternalsRelative };
+  }
 }

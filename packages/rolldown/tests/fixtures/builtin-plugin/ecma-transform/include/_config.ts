@@ -1,6 +1,7 @@
-import { transformPlugin } from 'rolldown/experimental'
-import { defineTest } from 'rolldown-tests'
 import { expect } from 'vitest'
+import { defineTest } from 'rolldown-tests'
+import { transformPlugin } from 'rolldown/experimental'
+
 
 let transformed: string[] = []
 
@@ -11,7 +12,7 @@ export default defineTest({
     input: './main.ts',
     plugins: [
       transformPlugin({
-        include: ['node_modules/**'],
+        include: ['**/node_modules/**'],
       }),
       {
         name: 'test',
@@ -26,9 +27,6 @@ export default defineTest({
   },
   async afterTest() {
     expect(transformed.length).toBe(1)
-    expect(transformed.filter((id) => id.includes('node_modules')).length).toBe(
-      1,
-    )
-    transformed = []
+    expect(transformed.splice(0)[0].includes('node_modules')).toBeTruthy()
   },
 })

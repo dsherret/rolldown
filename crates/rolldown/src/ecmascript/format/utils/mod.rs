@@ -32,7 +32,7 @@ pub fn render_chunk_external_imports<'a>(
     .imports_from_external_modules
     .iter()
     .filter_map(|(importee_id, _)| {
-      let importee = ctx.link_output.module_table.modules[*importee_id]
+      let importee = ctx.link_output.module_table[*importee_id]
         .as_external()
         .expect("Should be external module here");
 
@@ -97,4 +97,17 @@ pub fn render_modules_with_peek_runtime_module_at_first<'a>(
       }
     },
   );
+}
+
+pub fn render_chunk_directives<'a, T: Iterator<Item = &'a &'a str>>(directives: T) -> String {
+  let mut ret = String::new();
+  for d in directives {
+    ret.push_str(d);
+    if (d).ends_with(';') {
+      ret.push('\n');
+    } else {
+      ret.push_str(";\n");
+    }
+  }
+  ret
 }

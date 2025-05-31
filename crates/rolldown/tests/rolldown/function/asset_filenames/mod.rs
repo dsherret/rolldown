@@ -3,7 +3,7 @@ use std::{borrow::Cow, sync::Arc};
 use anyhow::Ok;
 use rolldown::{AssetFilenamesOutputOption, BundlerOptions, InputItem};
 use rolldown_common::EmittedAsset;
-use rolldown_plugin::{Plugin, PluginContext};
+use rolldown_plugin::{HookUsage, Plugin, PluginContext};
 use rolldown_testing::{abs_file_dir, integration_test::IntegrationTest, test_config::TestMeta};
 
 #[derive(Debug)]
@@ -32,6 +32,10 @@ impl Plugin for TestPlugin {
 
     Ok(None)
   }
+
+  fn register_hook_usage(&self) -> HookUsage {
+    HookUsage::RenderChunk
+  }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -47,7 +51,7 @@ async fn test() {
         }]),
         cwd: Some(cwd),
         asset_filenames: Some(AssetFilenamesOutputOption::String(
-          "[name]-[hash]-[hash:1].js".into(),
+          "[name]-[hash]-[hash:1]-[hash:23].js".into(),
         )),
         ..Default::default()
       },

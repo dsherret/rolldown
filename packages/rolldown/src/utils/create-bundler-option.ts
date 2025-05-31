@@ -1,68 +1,72 @@
-import { BindingBundlerOptions } from '../binding'
-import { PluginDriver } from '../plugin/plugin-driver'
-import { bindingifyInputOptions } from './bindingify-input-options'
-import { bindingifyOutputOptions } from './bindingify-output-options'
-import { composeJsPlugins } from './compose-js-plugins'
+import type { BindingBundlerOptions } from '../binding';
+import type { LogHandler } from '../log/log-handler';
+import { getLogger, getOnLog } from '../log/logger';
+import { LOG_LEVEL_INFO } from '../log/logging';
+import type { InputOptions } from '../options/input-options';
+import type { OutputOptions } from '../options/output-options';
+import { PluginDriver } from '../plugin/plugin-driver';
+import { getObjectPlugins } from '../plugin/plugin-driver';
+import { bindingifyInputOptions } from './bindingify-input-options';
+import { bindingifyOutputOptions } from './bindingify-output-options';
+import { composeJsPlugins } from './compose-js-plugins';
+import { initializeParallelPlugins } from './initialize-parallel-plugins';
 import {
   ANONYMOUS_OUTPUT_PLUGIN_PREFIX,
   ANONYMOUS_PLUGIN_PREFIX,
+  BUILTIN_PLUGINS,
   checkOutputPluginOption,
   normalizePluginOption,
   normalizePlugins,
-} from './normalize-plugin-option'
-import { initializeParallelPlugins } from './initialize-parallel-plugins'
-import { getObjectPlugins } from '../plugin/plugin-driver'
-import { LogHandler } from '../types/misc'
-import { logMinifyWarning } from '../log/logs'
-import { getLogger, getOnLog } from '../log/logger'
-import { LOG_LEVEL_INFO, LOG_LEVEL_WARN } from '../log/logging'
-import type { InputOptions } from '../options/input-options'
-import type { OutputOptions } from '../options/output-options'
+} from './normalize-plugin-option';
 
 export async function createBundlerOptions(
   inputOptions: InputOptions,
   outputOptions: OutputOptions,
+  watchMode: boolean,
   isClose?: boolean,
 ): Promise<BundlerOptionWithStopWorker> {
-  const inputPlugins = await normalizePluginOption(inputOptions.plugins)
-  const outputPlugins = await normalizePluginOption(outputOptions.plugins)
+  const inputPlugins = await normalizePluginOption(inputOptions.plugins);
+  const outputPlugins = await normalizePluginOption(outputOptions.plugins);
 
-  const logLevel = inputOptions.logLevel || LOG_LEVEL_INFO
+  const logLevel = inputOptions.logLevel || LOG_LEVEL_INFO;
   const onLog = getLogger(
     getObjectPlugins(inputPlugins),
     getOnLog(inputOptions, logLevel),
     logLevel,
-  )
+    watchMode,
+  );
 
   if (!isClose) {
     // The `outputOptions` hook is called with the input plugins and the output plugins
     outputOptions = PluginDriver.callOutputOptionsHook(
       [...inputPlugins, ...outputPlugins],
       outputOptions,
-    )
-  }
-
-  if (outputOptions.minify === true) {
-    onLog(LOG_LEVEL_WARN, logMinifyWarning())
+      onLog,
+      logLevel,
+      watchMode,
+    );
   }
 
   const normalizedOutputPlugins = await normalizePluginOption(
     outputOptions.plugins,
-  )
+  );
 
   let plugins = [
+    ...BUILTIN_PLUGINS,
     ...normalizePlugins(inputPlugins, ANONYMOUS_PLUGIN_PREFIX),
     ...checkOutputPluginOption(
       normalizePlugins(normalizedOutputPlugins, ANONYMOUS_OUTPUT_PLUGIN_PREFIX),
       onLog,
     ),
-  ]
+  ];
 
   if (inputOptions.experimental?.enableComposingJsPlugins ?? false) {
-    plugins = composeJsPlugins(plugins)
+    plugins = composeJsPlugins(plugins);
   }
 
-  const parallelPluginInitResult = await initializeParallelPlugins(plugins)
+  const parallelPluginInitResult = import.meta.browserBuild
+    ? undefined
+    : await initializeParallelPlugins(plugins);
 
   try {
     // Convert `InputOptions` to `BindingInputOptions`
@@ -73,10 +77,11 @@ export async function createBundlerOptions(
       normalizedOutputPlugins,
       onLog,
       logLevel,
-    )
+      watchMode,
+    );
 
     // Convert `OutputOptions` to `BindingInputOptions`
-    const bindingOutputOptions = bindingifyOutputOptions(outputOptions)
+    const bindingOutputOptions = bindingifyOutputOptions(outputOptions);
 
     return {
       bundlerOptions: {
@@ -87,16 +92,16 @@ export async function createBundlerOptions(
       inputOptions,
       onLog,
       stopWorkers: parallelPluginInitResult?.stopWorkers,
-    }
+    };
   } catch (e) {
-    await parallelPluginInitResult?.stopWorkers()
-    throw e
+    await parallelPluginInitResult?.stopWorkers();
+    throw e;
   }
 }
 
 export interface BundlerOptionWithStopWorker {
-  bundlerOptions: BindingBundlerOptions
-  inputOptions: InputOptions
-  onLog: LogHandler
-  stopWorkers?: () => Promise<void>
+  bundlerOptions: BindingBundlerOptions;
+  inputOptions: InputOptions;
+  onLog: LogHandler;
+  stopWorkers?: () => Promise<void>;
 }

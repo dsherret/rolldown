@@ -10,13 +10,12 @@ const x = /* @__PURE__ */ (0, import_react.createElement)(import_react2.Link, { 
 ```
 ### rolldown
 ```js
-"use strict";
 
 const __remix_run_react = __toESM(require("@remix-run/react"));
 const react = __toESM(require("react"));
 
 //#region entry.jsx
-const x = (0, react.createElement)(__remix_run_react.Link, {
+const x = /* @__PURE__ */ (0, react.createElement)(__remix_run_react.Link, {
 	...y,
 	key: z
 });

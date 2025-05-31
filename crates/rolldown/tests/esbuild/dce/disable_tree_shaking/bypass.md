@@ -20,10 +20,9 @@ var keepMe6 = some.fn();
 ```
 ### rolldown
 ```js
-
 //#region entry.jsx
 function KeepMe1() {}
-let keepMe2 = React.createElement(KeepMe1, null);
+let keepMe2 = /* @__PURE__ */ React.createElement(KeepMe1, null);
 function keepMe3() {
 	console.log("side effects");
 }

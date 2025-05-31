@@ -2,7 +2,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use rolldown::{BundlerOptions, InputItem};
 use rolldown_plugin::{
-  HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn, Plugin, PluginContext,
+  HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn, HookUsage, Plugin, PluginContext,
 };
 use rolldown_testing::{abs_file_dir, integration_test::IntegrationTest, test_config::TestMeta};
 
@@ -22,11 +22,15 @@ impl Plugin for UnresolvedImport {
     if args.specifier == "test.js" {
       return Ok(Some(HookResolveIdOutput {
         id: args.specifier.into(),
-        external: Some(false),
+        external: Some(false.into()),
         ..Default::default()
       }));
     }
     Ok(None)
+  }
+
+  fn register_hook_usage(&self) -> HookUsage {
+    HookUsage::ResolveId
   }
 }
 

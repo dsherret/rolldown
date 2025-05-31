@@ -15,7 +15,11 @@ pub struct ExportUndefinedVariable {
 
 impl BuildEvent for ExportUndefinedVariable {
   fn kind(&self) -> crate::event_kind::EventKind {
-    crate::event_kind::EventKind::ExportUndefinedVariable
+    crate::event_kind::EventKind::ExportUndefinedVariableError
+  }
+
+  fn id(&self) -> Option<String> {
+    Some(self.filename.to_string())
   }
 
   fn message(&self, _opts: &DiagnosticOptions) -> String {

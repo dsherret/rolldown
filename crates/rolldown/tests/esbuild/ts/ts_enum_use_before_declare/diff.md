@@ -18,12 +18,11 @@ export {
 ```
 ### rolldown
 ```js
-
 //#region entry.ts
 function before() {
 	console.log(Foo.FOO);
 }
-var Foo = function(Foo$1) {
+var Foo = /* @__PURE__ */ function(Foo$1) {
 	Foo$1[Foo$1["FOO"] = 0] = "FOO";
 	return Foo$1;
 }(Foo || {});

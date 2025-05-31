@@ -1,6 +1,5 @@
 ---
 source: crates/rolldown_testing/src/integration_test.rs
-snapshot_kind: text
 ---
 # warnings
 
@@ -33,7 +32,6 @@ input.works = import("./foo2.js").then((foo3) => foo.bar === 123 && foo.__esModu
 ## foo.js
 
 ```js
-
 
 //#region foo.js
 var foo_exports = {};
@@ -77,7 +75,6 @@ Variant: (format: Cjs)
 ## entry.js
 
 ```js
-"use strict";
 const require_foo = require('./foo.js');
 
 //#region entry.js
@@ -92,7 +89,6 @@ input.works = Promise.resolve().then(function() {
 ## foo.js
 
 ```js
-"use strict";
 
 
 //#region foo.js
@@ -135,7 +131,7 @@ Object.defineProperty(exports, 'init_foo', {
 const require_foo = require('./foo.js');
 
 require_foo.init_foo();
-exports.bar = require_foo.bar
+exports.bar = require_foo.bar;
 ```
 ---
 
@@ -162,7 +158,6 @@ Variant: (format: Iife)
 ```js
 (function() {
 
-"use strict";
 
 
 //#region foo.js
@@ -212,7 +207,6 @@ Variant: (format: Umd)
   typeof define === 'function' && define.amd ? define([], factory) :
   factory();
 })(function() {
-"use strict";
 
 
 //#region foo.js

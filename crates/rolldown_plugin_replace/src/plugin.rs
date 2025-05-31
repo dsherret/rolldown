@@ -1,7 +1,8 @@
+use std::borrow::Cow;
 use std::ops::Range;
 use std::{cmp::Reverse, sync::Arc};
 
-use rolldown_plugin::{HookRenderChunkOutput, HookTransformOutput, Plugin};
+use rolldown_plugin::{HookRenderChunkOutput, HookTransformOutput, HookUsage, Plugin};
 use rustc_hash::FxHashMap;
 use string_wizard::{MagicString, SourceMapOptions};
 
@@ -170,7 +171,7 @@ impl ReplacePlugin {
 
 impl Plugin for ReplacePlugin {
   fn name(&self) -> std::borrow::Cow<'static, str> {
-    "builtin:replace".into()
+    Cow::Borrowed("builtin:replace")
   }
 
   async fn transform(
@@ -214,5 +215,9 @@ impl Plugin for ReplacePlugin {
       }));
     }
     Ok(None)
+  }
+
+  fn register_hook_usage(&self) -> HookUsage {
+    HookUsage::Transform | HookUsage::RenderChunk
   }
 }

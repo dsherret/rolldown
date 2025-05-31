@@ -12,13 +12,12 @@ console.log(/* @__PURE__ */ React.createElement("div" /* Div */, null));
 ```
 ### rolldown
 ```js
-
 //#region element.tsx
-let Foo = function(Foo$1) {
+let Foo = /* @__PURE__ */ function(Foo$1) {
 	Foo$1["Div"] = "div";
 	return Foo$1;
 }({});
-console.log(React.createElement(Foo.Div, null));
+console.log(/* @__PURE__ */ React.createElement(Foo.Div, null));
 
 //#endregion
 export { Foo };
@@ -53,13 +52,12 @@ console.log(/* @__PURE__ */ React.createElement("div" /* Fragment */, null, "tes
 ```
 ### rolldown
 ```js
-
 //#region fragment.tsx
-let React = function(React$1) {
+let React = /* @__PURE__ */ function(React$1) {
 	React$1["Fragment"] = "div";
 	return React$1;
 }({});
-console.log(React.createElement(React.Fragment, null, "test"));
+console.log(/* @__PURE__ */ React.createElement(React.Fragment, null, "test"));
 
 //#endregion
 export { React };
@@ -105,13 +103,12 @@ var x;
 ```
 ### rolldown
 ```js
-
 //#region nested-element.tsx
 let x;
 (function(_x) {
 	let y;
 	(function(_y) {
-		let Foo = function(Foo$1) {
+		let Foo = /* @__PURE__ */ function(Foo$1) {
 			Foo$1["Div"] = "div";
 			return Foo$1;
 		}({});
@@ -121,7 +118,7 @@ let x;
 (function(_x2) {
 	let y;
 	(function(_y2) {
-		console.log(React.createElement(x.y.Foo.Div, null));
+		console.log(/* @__PURE__ */ React.createElement(x.y.Foo.Div, null));
 	})(y || (y = _x2.y || (_x2.y = {})));
 })(x || (x = {}));
 
@@ -185,13 +182,12 @@ var x;
 ```
 ### rolldown
 ```js
-
 //#region nested-fragment.tsx
 let x;
 (function(_x) {
 	let y;
 	(function(_y) {
-		let React$1 = function(React$2) {
+		let React$1 = /* @__PURE__ */ function(React$2) {
 			React$2["Fragment"] = "div";
 			return React$2;
 		}({});
@@ -201,7 +197,7 @@ let x;
 (function(_x2) {
 	let y;
 	(function(_y2) {
-		console.log(React.createElement(React.Fragment, null, "test"));
+		console.log(/* @__PURE__ */ React.createElement(React.Fragment, null, "test"));
 	})(y || (y = _x2.y || (_x2.y = {})));
 })(x || (x = {}));
 

@@ -1,3 +1,4 @@
+use crate::options::binding_jsx::BindingJsx;
 use crate::options::{AssetFileNamesOutputOption, ChunkFileNamesOutputOption, SanitizeFileName};
 use crate::{
   options::binding_inject_import::normalize_binding_inject_import,
@@ -6,14 +7,15 @@ use crate::{
 #[cfg_attr(target_family = "wasm", allow(unused))]
 use crate::{
   options::plugin::JsPlugin,
-  types::{binding_rendered_chunk::RenderedChunk, js_callback::MaybeAsyncJsCallbackExt},
+  types::{binding_rendered_chunk::BindingRenderedChunk, js_callback::MaybeAsyncJsCallbackExt},
 };
 use napi::bindgen_prelude::{Either, FnArgs};
+use oxc::transformer::ESTarget;
 use rolldown::{
   AddonOutputOption, AdvancedChunksOptions, AssetFilenamesOutputOption, BundlerOptions,
-  ChunkFilenamesOutputOption, DeferSyncScanDataOption, ExperimentalOptions, HashCharacters,
-  IsExternal, MatchGroup, ModuleType, OutputExports, OutputFormat, Platform, RawMinifyOptions,
-  SanitizeFilename,
+  ChunkFilenamesOutputOption, DeferSyncScanDataOption, HashCharacters, IsExternal, JsxPreset,
+  MatchGroup, ModuleType, OutputExports, OutputFormat, Platform, PreserveEntrySignatures,
+  RawMinifyOptions, SanitizeFilename, TransformOptions,
 };
 use rolldown_common::DeferSyncScanData;
 use rolldown_plugin::__inner::SharedPluginable;
@@ -38,10 +40,9 @@ fn normalize_addon_option(
   addon_option.map(move |value| {
     AddonOutputOption::Fn(Arc::new(move |chunk| {
       let fn_js = Arc::clone(&value);
-      let chunk = chunk.clone();
       Box::pin(async move {
         fn_js
-          .await_call(FnArgs { data: (RenderedChunk::from(chunk),) })
+          .await_call(FnArgs { data: (BindingRenderedChunk::new(chunk),) })
           .await
           .map_err(anyhow::Error::from)
       })
@@ -115,6 +116,46 @@ fn normalize_globals_option(
   })
 }
 
+fn normalize_es_target(target: Option<&Either<String, Vec<String>>>) -> ESTarget {
+  target.map_or(ESTarget::ESNext, |target| {
+    let targets = match target {
+      Either::A(target) => {
+        if target.contains(',') {
+          target.split(',').collect::<Vec<&str>>()
+        } else {
+          vec![target.as_str()]
+        }
+      }
+      Either::B(target) => target.iter().map(std::string::String::as_str).collect::<Vec<&str>>(),
+    };
+    for target in targets {
+      if target.len() <= 2 || !target[..2].eq_ignore_ascii_case("es") {
+        continue;
+      }
+      if target[2..].eq_ignore_ascii_case("next") {
+        return ESTarget::ESNext;
+      }
+      if let Ok(n) = target[2..].parse::<usize>() {
+        return match n {
+          5 => ESTarget::ES5,
+          6 | 2015 => ESTarget::ES2015,
+          2016 => ESTarget::ES2016,
+          2017 => ESTarget::ES2017,
+          2018 => ESTarget::ES2018,
+          2019 => ESTarget::ES2019,
+          2020 => ESTarget::ES2020,
+          2021 => ESTarget::ES2021,
+          2022 => ESTarget::ES2022,
+          2023 => ESTarget::ES2023,
+          2024 => ESTarget::ES2024,
+          _ => continue,
+        };
+      }
+    }
+    ESTarget::ES2015
+  })
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn normalize_binding_options(
   input_options: crate::options::BindingInputOptions,
@@ -175,6 +216,35 @@ pub fn normalize_binding_options(
     }))
   });
 
+  let invalidate_js_side_cache = input_options.invalidate_js_side_cache.map(|ts_fn| {
+    rolldown::InvalidateJsSideCache::new(Arc::new(move || {
+      let ts_fn = Arc::clone(&ts_fn);
+      Box::pin(async move { ts_fn.invoke_async((None,).into()).await.map_err(anyhow::Error::from) })
+    }))
+  });
+
+  let mark_module_loaded = input_options.mark_module_loaded.map(|ts_fn| {
+    rolldown::MarkModuleLoaded::new(Arc::new(move |module_id, success| {
+      let ts_fn = Arc::clone(&ts_fn);
+      let module_id = module_id.to_string();
+      Box::pin(async move {
+        ts_fn.invoke_async((module_id, success).into()).await.map_err(anyhow::Error::from)
+      })
+    }))
+  });
+
+  let on_log = input_options.on_log.map(|ts_fn| {
+    rolldown::OnLog::new(Arc::new(move |level, log| {
+      let ts_fn = Arc::clone(&ts_fn);
+      Box::pin(async move {
+        ts_fn
+          .invoke_async((level.to_string(), log.into()).into())
+          .await
+          .map_err(anyhow::Error::from)
+      })
+    }))
+  });
+
   let mut module_types = None;
   if let Some(raw) = input_options.module_types {
     let mut tmp: FxHashMap<_, _> = FxHashMapExt::with_capacity(raw.len());
@@ -187,6 +257,46 @@ pub fn normalize_binding_options(
     }
     module_types = Some(tmp);
   }
+
+  let transform = match input_options.transform {
+    Some(options) => {
+      let es_target = normalize_es_target(options.target.as_ref());
+      let is_preserve = matches!(&options.jsx, Some(Either::A(preset)) if preset == "preserve");
+      Some(
+        oxc::transformer::TransformOptions::try_from(options)
+          .map(|transform_options| {
+            let jsx_preset = if is_preserve {
+              JsxPreset::Preserve
+            } else if transform_options.jsx.jsx_plugin {
+              JsxPreset::Enable
+            } else {
+              JsxPreset::Disable
+            };
+            TransformOptions::new(transform_options, es_target, jsx_preset)
+          })
+          .map_err(|err| napi::Error::new(napi::Status::GenericFailure, err))?,
+      )
+    }
+    None => input_options.jsx.map(|jsx| {
+      let mut jsx_preset = JsxPreset::Enable;
+      let mut transform_options = oxc::transformer::TransformOptions::default();
+      match jsx {
+        BindingJsx::Disable => {
+          jsx_preset = JsxPreset::Disable;
+          transform_options.jsx.jsx_plugin = false;
+        }
+        BindingJsx::Preserve => {
+          jsx_preset = JsxPreset::Preserve;
+          transform_options.jsx = oxc::transformer::JsxOptions::disable();
+        }
+        BindingJsx::React => {
+          transform_options.jsx.runtime = oxc::transformer::JsxRuntime::Classic;
+        }
+        BindingJsx::ReactJsx => {}
+      }
+      TransformOptions::new(transform_options, ESTarget::ESNext, jsx_preset)
+    }),
+  };
 
   let bundler_options = BundlerOptions {
     input: Some(input_options.input.into_iter().map(Into::into).collect()),
@@ -248,15 +358,7 @@ pub fn normalize_binding_options(
     }),
     globals: normalize_globals_option(output_options.globals),
     module_types,
-    experimental: input_options.experimental.map(|inner| ExperimentalOptions {
-      strict_execution_order: inner.strict_execution_order,
-      disable_live_bindings: inner.disable_live_bindings,
-      vite_mode: inner.vite_mode,
-      resolve_new_url_to_asset: inner.resolve_new_url_to_asset,
-      // TODO: binding
-      incremental_build: None,
-      hmr: inner.hmr,
-    }),
+    experimental: input_options.experimental.map(Into::into),
     minify: output_options
       .minify
       .map(|opts| match opts {
@@ -289,7 +391,18 @@ pub fn normalize_binding_options(
           .into_iter()
           .map(|item| MatchGroup {
             name: item.name,
-            test: item.test.map(|inner| inner.try_into().expect("Invalid regex pass to test")),
+            test: item.test.map(|inner| match inner {
+              Either::A(reg) => {
+                rolldown::MatchGroupTest::Regex(reg.try_into().expect("Invalid regex pass to test"))
+              }
+              Either::B(func) => rolldown::MatchGroupTest::Function(Arc::new(move |id: &str| {
+                let id = id.to_string();
+                let func = Arc::clone(&func);
+                Box::pin(async move {
+                  func.invoke_async((id,).into()).await.map_err(anyhow::Error::from)
+                })
+              })),
+            }),
             priority: item.priority,
             min_size: item.min_size,
             min_share_count: item.min_share_count,
@@ -299,27 +412,62 @@ pub fn normalize_binding_options(
           })
           .collect::<Vec<_>>()
       }),
+      include_dependencies_recursively: None,
     }),
     checks: input_options.checks.map(Into::into),
     profiler_names: input_options.profiler_names,
-    jsx: input_options.jsx.map(Into::into),
     watch: input_options.watch.map(TryInto::try_into).transpose()?,
-    comments: output_options
-      .comments
+    legal_comments: output_options
+      .legal_comments
       .map(|inner| match inner.as_str() {
-        "none" => Ok(rolldown::Comments::None),
-        "preserve-legal" => Ok(rolldown::Comments::Preserve),
+        "none" => Ok(rolldown::LegalComments::None),
+        "inline" => Ok(rolldown::LegalComments::Inline),
         _ => Err(napi::Error::new(
           napi::Status::GenericFailure,
-          format!("Invalid valid for `comments` option: {inner}"),
+          format!("Invalid value for `legalComments` option: {inner}"),
         )),
       })
       .transpose()?,
     drop_labels: input_options.drop_labels,
-    target: output_options.target.as_deref().map(std::str::FromStr::from_str).transpose()?,
     keep_names: input_options.keep_names,
     polyfill_require: output_options.polyfill_require,
     defer_sync_scan_data: get_defer_sync_scan_data,
+    transform,
+    make_absolute_externals_relative: input_options
+      .make_absolute_externals_relative
+      .map(Into::into),
+    debug: input_options.debug.map(|inner| rolldown::DebugOptions { session_id: inner.session_id }),
+    invalidate_js_side_cache,
+    mark_module_loaded,
+    log_level: Some(input_options.log_level.into()),
+    on_log,
+    preserve_modules: output_options.preserve_modules,
+    virtual_dirname: output_options.virtual_dirname,
+    preserve_modules_root: output_options.preserve_modules_root,
+    preserve_entry_signatures: output_options
+      .preserve_entry_signatures
+      .map(|v| match v {
+        Either::A(str) => match str.as_str() {
+          "exports-only" => Ok(PreserveEntrySignatures::ExportsOnly),
+          "strict" => Ok(PreserveEntrySignatures::Strict),
+          "allow-extension" => Ok(PreserveEntrySignatures::AllowExtension),
+          _ => Err(napi::Error::new(
+            napi::Status::GenericFailure,
+            format!("Invalid value for `preserveEntrySignatures` option: {str}"),
+          )),
+        },
+        Either::B(bool) => {
+          if bool {
+            Err(napi::Error::new(
+              napi::Status::GenericFailure,
+              format!("Invalid value for `preserveEntrySignatures` option: {bool}"),
+            ))
+          } else {
+            Ok(PreserveEntrySignatures::False)
+          }
+        }
+      })
+      .transpose()?,
   };
 
   #[cfg(not(target_family = "wasm"))]

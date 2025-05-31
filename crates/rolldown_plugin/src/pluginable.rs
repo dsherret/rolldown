@@ -4,8 +4,8 @@ use super::plugin_context::PluginContext;
 use crate::{
   HookAddonArgs, HookBuildEndArgs, HookBuildStartArgs, HookGenerateBundleArgs,
   HookInjectionOutputReturn, HookLoadArgs, HookRenderChunkArgs, HookRenderStartArgs,
-  HookResolveIdArgs, HookTransformArgs, Plugin, SharedTransformPluginContext,
-  plugin_hook_meta::PluginHookMeta,
+  HookResolveIdArgs, HookTransformArgs, HookUsage, Plugin, PluginHookMeta,
+  SharedTransformPluginContext,
   types::{
     hook_render_error::HookRenderErrorArgs, hook_transform_ast_args::HookTransformAstArgs,
     hook_write_bundle_args::HookWriteBundleArgs,
@@ -77,10 +77,10 @@ pub trait Pluginable: Any + Debug + Send + Sync + 'static {
 
   fn call_transform_meta(&self) -> Option<PluginHookMeta>;
 
-  fn call_transform_ast(
+  async fn call_transform_ast(
     &self,
     _ctx: &PluginContext,
-    args: HookTransformAstArgs,
+    args: HookTransformAstArgs<'_>,
   ) -> HookTransformAstReturn;
 
   fn call_transform_ast_meta(&self) -> Option<PluginHookMeta>;
@@ -155,7 +155,7 @@ pub trait Pluginable: Any + Debug + Send + Sync + 'static {
   async fn call_augment_chunk_hash(
     &self,
     _ctx: &PluginContext,
-    _chunk: &RollupRenderedChunk,
+    _chunk: Arc<RollupRenderedChunk>,
   ) -> HookAugmentChunkHashReturn;
 
   fn call_augment_chunk_hash_meta(&self) -> Option<PluginHookMeta>;
@@ -208,6 +208,8 @@ pub trait Pluginable: Any + Debug + Send + Sync + 'static {
   fn call_close_watcher_meta(&self) -> Option<PluginHookMeta> {
     None
   }
+
+  fn call_hook_usage(&self) -> HookUsage;
 }
 
 #[async_trait::async_trait]
@@ -373,7 +375,7 @@ impl<T: Plugin> Pluginable for T {
   async fn call_augment_chunk_hash(
     &self,
     ctx: &PluginContext,
-    chunk: &RollupRenderedChunk,
+    chunk: Arc<RollupRenderedChunk>,
   ) -> HookAugmentChunkHashReturn {
     Plugin::augment_chunk_hash(self, ctx, chunk).await
   }
@@ -447,15 +449,19 @@ impl<T: Plugin> Pluginable for T {
     Plugin::close_watcher_meta(self)
   }
 
-  fn call_transform_ast(
+  async fn call_transform_ast(
     &self,
     ctx: &PluginContext,
-    args: HookTransformAstArgs,
+    args: HookTransformAstArgs<'_>,
   ) -> HookTransformAstReturn {
-    Plugin::transform_ast(self, ctx, args)
+    Plugin::transform_ast(self, ctx, args).await
   }
 
   fn call_transform_ast_meta(&self) -> Option<PluginHookMeta> {
     Plugin::transform_ast_meta(self)
+  }
+
+  fn call_hook_usage(&self) -> HookUsage {
+    Plugin::register_hook_usage(self)
   }
 }

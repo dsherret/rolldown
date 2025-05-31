@@ -9,18 +9,22 @@
   },
   "exports": {
     ".": {
-      "default": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "scripts": {
     "build": "tsc -b",
-    "build:watch": "tsc -b --watch"
+    "dev": "tsc -b --watch"
   },
   "dependencies": {
+    "@types/ws": "^8.18.0",
+    "chokidar": "^4.0.3",
     "connect": "^3.7.0",
     "rolldown": "workspace:*",
-    "serve-static": "^1.16.2"
+    "serve-static": "^2.0.0",
+    "ws": "^8.18.1"
   },
   "devDependencies": {
     "@types/connect": "^3.4.38",

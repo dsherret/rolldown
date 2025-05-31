@@ -1,5 +1,3 @@
-import { Plugin } from '../plugin'
-
 export const ENUMERATED_INPUT_PLUGIN_HOOK_NAMES = [
   'options',
   'buildStart',
@@ -13,9 +11,9 @@ export const ENUMERATED_INPUT_PLUGIN_HOOK_NAMES = [
   'closeBundle',
   'closeWatcher',
   'watchChange',
-] as const
+] as const;
 
-export const ENUMERATED_OUTPUT_PLUGIN_HOOK_NAMES = [
+const ENUMERATED_OUTPUT_PLUGIN_HOOK_NAMES = [
   'augmentChunkHash',
   'outputOptions',
   'renderChunk',
@@ -23,7 +21,7 @@ export const ENUMERATED_OUTPUT_PLUGIN_HOOK_NAMES = [
   'renderError',
   'writeBundle',
   'generateBundle',
-] as const
+] as const;
 
 export const ENUMERATED_PLUGIN_HOOK_NAMES: [
   ...typeof ENUMERATED_INPUT_PLUGIN_HOOK_NAMES,
@@ -42,18 +40,13 @@ export const ENUMERATED_PLUGIN_HOOK_NAMES: [
   'banner',
   'intro',
   'outro',
-] as const
+] as const;
 
-/**
- * Names of all properties in a `Plugin` object. Includes `name` and `api`.
- */
-export type PluginProps = keyof Plugin
-
-type EnumeratedPluginHookNames = typeof ENUMERATED_PLUGIN_HOOK_NAMES
+type EnumeratedPluginHookNames = typeof ENUMERATED_PLUGIN_HOOK_NAMES;
 /**
  * Names of all hooks in a `Plugin` object. Does not include `name` and `api`, since they are not hooks.
  */
-export type PluginHookNames = EnumeratedPluginHookNames[number]
+export type PluginHookNames = EnumeratedPluginHookNames[number];
 
 /**
  * Names of all defined hooks. It's like
@@ -66,8 +59,8 @@ export type PluginHookNames = EnumeratedPluginHookNames[number]
  * ```
  */
 export type DefinedHookNames = {
-  readonly [K in PluginHookNames]: K
-}
+  readonly [K in PluginHookNames]: K;
+};
 
 /**
  * Names of all defined hooks. It's like
@@ -103,4 +96,4 @@ export const DEFINED_HOOK_NAMES: DefinedHookNames = {
   [ENUMERATED_PLUGIN_HOOK_NAMES[20]]: ENUMERATED_PLUGIN_HOOK_NAMES[20],
   [ENUMERATED_PLUGIN_HOOK_NAMES[21]]: ENUMERATED_PLUGIN_HOOK_NAMES[21],
   [ENUMERATED_PLUGIN_HOOK_NAMES[22]]: ENUMERATED_PLUGIN_HOOK_NAMES[22],
-} as const
+} as const;

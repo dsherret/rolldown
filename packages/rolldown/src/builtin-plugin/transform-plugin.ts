@@ -1,36 +1,32 @@
-import { BuiltinPlugin } from './constructors'
+import { BuiltinPlugin } from './constructors';
 
-import { BindingTransformPluginConfig } from '../binding'
-import { normalizedStringOrRegex } from '../utils/normalize-string-or-regex'
+import type { BindingTransformPluginConfig } from '../binding';
+import { normalizedStringOrRegex } from '../utils/normalize-string-or-regex';
 
-type TransformPattern = string | RegExp | (RegExp | string)[]
+type TransformPattern = string | RegExp | readonly (RegExp | string)[];
+
 // A temp config type for giving better user experience
-export type TransformPluginConfig = Omit<
-  BindingTransformPluginConfig,
-  'include' | 'exclude'
-> & {
-  include?: TransformPattern
-  exclude?: TransformPattern
-}
-
-function normalizeEcmaTransformPluginConfig(
-  config?: TransformPluginConfig,
-): BindingTransformPluginConfig | undefined {
-  if (!config) {
-    return undefined
-  }
-  let normalizedConfig: BindingTransformPluginConfig = {
-    ...config,
-    exclude: normalizedStringOrRegex(config.exclude),
-    include: normalizedStringOrRegex(config.include),
-  }
-
-  return normalizedConfig
-}
+type TransformPluginConfig =
+  & Omit<
+    BindingTransformPluginConfig,
+    'include' | 'exclude' | 'jsxRefreshInclude' | 'jsxRefreshExclude'
+  >
+  & {
+    include?: TransformPattern;
+    exclude?: TransformPattern;
+    jsxRefreshInclude?: TransformPattern;
+    jsxRefreshExclude?: TransformPattern;
+  };
 
 export function transformPlugin(config?: TransformPluginConfig): BuiltinPlugin {
-  return new BuiltinPlugin(
-    'builtin:transform',
-    normalizeEcmaTransformPluginConfig(config),
-  )
+  if (config) {
+    config = {
+      ...config,
+      include: normalizedStringOrRegex(config.include),
+      exclude: normalizedStringOrRegex(config.exclude),
+      jsxRefreshInclude: normalizedStringOrRegex(config.jsxRefreshInclude),
+      jsxRefreshExclude: normalizedStringOrRegex(config.jsxRefreshExclude),
+    };
+  }
+  return new BuiltinPlugin('builtin:transform', config);
 }

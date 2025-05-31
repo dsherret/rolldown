@@ -2,12 +2,16 @@ use std::cmp::Reverse;
 
 use arcstr::ArcStr;
 use oxc_index::IndexVec;
-use rolldown_common::{Chunk, ChunkKind, Module, ModuleIdx, ModuleTable};
+use rolldown_common::{Chunk, ChunkKind, MatchGroupTest, Module, ModuleIdx, ModuleTable};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{chunk_graph::ChunkGraph, types::linking_metadata::LinkingMetadataVec};
 
-use super::{GenerateStage, code_splitting::IndexSplittingInfo};
+use super::{
+  GenerateStage,
+  chunk_ext::{ChunkCreationReason, ChunkDebugExt},
+  code_splitting::IndexSplittingInfo,
+};
 
 // `ModuleGroup` is a temporary representation of `Chunk`. A valid `ModuleGroup` would be converted to a `Chunk` in the end.
 #[derive(Debug)]
@@ -27,14 +31,14 @@ impl ModuleGroup {
   #[allow(clippy::cast_precision_loss)] // We consider `usize` to `f64` is safe here
   pub fn add_module(&mut self, module_idx: ModuleIdx, module_table: &ModuleTable) {
     if self.modules.insert(module_idx) {
-      self.sizes += module_table.modules[module_idx].size() as f64;
+      self.sizes += module_table[module_idx].size() as f64;
     }
   }
 
   #[allow(clippy::cast_precision_loss)] // We consider `usize` to `f64` is safe here
   pub fn remove_module(&mut self, module_idx: ModuleIdx, module_table: &ModuleTable) {
     if self.modules.remove(&module_idx) {
-      self.sizes -= module_table.modules[module_idx].size() as f64;
+      self.sizes -= module_table[module_idx].size() as f64;
       self.sizes = f64::max(self.sizes, 0.0);
     }
   }
@@ -47,24 +51,25 @@ impl GenerateStage<'_> {
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap
   )] // TODO(hyf0): refactor
-  pub fn apply_advanced_chunks(
+  pub async fn apply_advanced_chunks(
     &self,
     index_splitting_info: &IndexSplittingInfo,
     module_to_assigned: &mut IndexVec<ModuleIdx, bool>,
     chunk_graph: &mut ChunkGraph,
-  ) {
+    input_base: &ArcStr,
+  ) -> anyhow::Result<()> {
     let Some(chunking_options) = &self.options.advanced_chunks else {
-      return;
+      return Ok(());
     };
 
     let Some(match_groups) =
       chunking_options.groups.as_ref().map(|inner| inner.iter().collect::<Vec<_>>())
     else {
-      return;
+      return Ok(());
     };
 
     if match_groups.is_empty() {
-      return;
+      return Ok(());
     }
 
     let mut index_module_groups: IndexVec<ModuleGroupIdx, ModuleGroup> = IndexVec::new();
@@ -83,8 +88,13 @@ impl GenerateStage<'_> {
       let splitting_info = &index_splitting_info[normal_module.idx];
 
       for (match_group_index, match_group) in match_groups.iter().copied().enumerate() {
-        let is_matched =
-          match_group.test.as_ref().is_none_or(|test| test.matches(&normal_module.id));
+        let is_matched = match &match_group.test {
+          None => true,
+          Some(MatchGroupTest::Regex(reg)) => reg.matches(&normal_module.id),
+          Some(MatchGroupTest::Function(func)) => {
+            func(&normal_module.id).await?.unwrap_or_default()
+          }
+        };
 
         if !is_matched {
           continue;
@@ -125,12 +135,16 @@ impl GenerateStage<'_> {
             })
           });
 
+        let include_dependencies_recursively =
+          chunking_options.include_dependencies_recursively.unwrap_or(true);
+
         add_module_and_dependencies_to_group_recursively(
           &mut index_module_groups[*module_group_idx],
           normal_module.idx,
           &self.link_output.metas,
           &self.link_output.module_table,
           &mut FxHashSet::default(),
+          include_dependencies_recursively,
         );
       }
     }
@@ -139,6 +153,31 @@ impl GenerateStage<'_> {
     module_groups.sort_by_key(|item| Reverse((Reverse(item.priority), item.match_group_index)));
     // Higher priority group goes first. If two groups have the same priority, the one with the lower index goes first.
     // Outer `Reverse` is due to we're gonna use `pop` consume the vector.
+
+    // Manually pull out the module `rolldown:runtime` into a standalone chunk.
+    let runtime_module_idx = self.link_output.runtime.id();
+    let Module::Normal(runtime_module) = &self.link_output.module_table[runtime_module_idx] else {
+      unreachable!("`rolldown:runtime` is always a normal module");
+    };
+
+    if runtime_module.meta.is_included() {
+      let runtime_chunk = Chunk::new(
+        Some("rolldown-runtime".into()),
+        None,
+        None,
+        index_splitting_info[runtime_module_idx].bits.clone(),
+        vec![],
+        ChunkKind::Common,
+        input_base.clone(),
+      );
+      let chunk_idx = chunk_graph.add_chunk(runtime_chunk);
+      module_groups.iter_mut().for_each(|group| {
+        group.remove_module(runtime_module_idx, &self.link_output.module_table);
+      });
+      chunk_graph.chunk_table[chunk_idx].bits.union(&index_splitting_info[runtime_module_idx].bits);
+      chunk_graph.add_module_to_chunk(runtime_module_idx, chunk_idx);
+      module_to_assigned[runtime_module_idx] = true;
+    }
 
     while let Some(this_module_group) = module_groups.pop() {
       if this_module_group.modules.is_empty() {
@@ -164,9 +203,9 @@ impl GenerateStage<'_> {
           modules.sort_by_key(|module_idx| {
             (
               // smaller size goes first
-              self.link_output.module_table.modules[*module_idx].size(),
-              self.link_output.module_table.modules[*module_idx].stable_id(),
-              self.link_output.module_table.modules[*module_idx].exec_order(),
+              self.link_output.module_table[*module_idx].size(),
+              self.link_output.module_table[*module_idx].stable_id(),
+              self.link_output.module_table[*module_idx].exec_order(),
             )
           });
           // Make sure we sort the modules based on size in the end. Since we compute new group size from left to right, if a giant
@@ -179,14 +218,14 @@ impl GenerateStage<'_> {
           let modules_len = modules.len() as isize;
 
           while left_size < allow_min_size && next_left_index < modules_len {
-            left_size += self.link_output.module_table.modules[modules[next_left_index as usize]]
-              .size() as f64;
+            left_size +=
+              self.link_output.module_table[modules[next_left_index as usize]].size() as f64;
             next_left_index += 1;
           }
 
           while right_size < allow_min_size && next_right_index >= 0 {
-            right_size += self.link_output.module_table.modules[modules[next_right_index as usize]]
-              .size() as f64;
+            right_size +=
+              self.link_output.module_table[modules[next_right_index as usize]].size() as f64;
             next_right_index -= 1;
           }
           if next_right_index + 1 < next_left_index {
@@ -241,7 +280,7 @@ impl GenerateStage<'_> {
           }
         }
       }
-      let chunk = Chunk::new(
+      let mut chunk = Chunk::new(
         Some(this_module_group.name.clone()),
         None,
         None,
@@ -251,7 +290,11 @@ impl GenerateStage<'_> {
         .clone(),
         vec![],
         ChunkKind::Common,
-        true,
+        input_base.clone(),
+      );
+      chunk.add_creation_reason(
+        ChunkCreationReason::AdvancedChunkGroup(&this_module_group.name),
+        self.options,
       );
 
       let chunk_idx = chunk_graph.add_chunk(chunk);
@@ -265,6 +308,7 @@ impl GenerateStage<'_> {
         module_to_assigned[module_idx] = true;
       });
     }
+    Ok(())
   }
 }
 
@@ -274,6 +318,7 @@ fn add_module_and_dependencies_to_group_recursively(
   module_metas: &LinkingMetadataVec,
   module_table: &ModuleTable,
   visited: &mut FxHashSet<ModuleIdx>,
+  recursively: bool,
 ) {
   let is_visited = !visited.insert(module_idx);
 
@@ -281,7 +326,7 @@ fn add_module_and_dependencies_to_group_recursively(
     return;
   }
 
-  let Module::Normal(module) = &module_table.modules[module_idx] else {
+  let Module::Normal(module) = &module_table[module_idx] else {
     return;
   };
 
@@ -292,14 +337,16 @@ fn add_module_and_dependencies_to_group_recursively(
   visited.insert(module_idx);
 
   module_group.add_module(module_idx, module_table);
-
-  for dep in &module_metas[module_idx].dependencies {
-    add_module_and_dependencies_to_group_recursively(
-      module_group,
-      *dep,
-      module_metas,
-      module_table,
-      visited,
-    );
+  if recursively {
+    for dep in &module_metas[module_idx].dependencies {
+      add_module_and_dependencies_to_group_recursively(
+        module_group,
+        *dep,
+        module_metas,
+        module_table,
+        visited,
+        recursively,
+      );
+    }
   }
 }

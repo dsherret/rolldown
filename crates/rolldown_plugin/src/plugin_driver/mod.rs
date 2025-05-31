@@ -6,6 +6,7 @@ use std::{
 
 use arcstr::ArcStr;
 use dashmap::{DashMap, DashSet};
+use oxc_index::IndexVec;
 use rolldown_common::{
   ModuleId, ModuleInfo, ModuleLoaderMsg, SharedFileEmitter, SharedNormalizedBundlerOptions,
 };
@@ -15,8 +16,8 @@ use tokio::sync::Mutex;
 
 use crate::{
   __inner::SharedPluginable,
-  PluginContext, PluginHookMeta, PluginOrder,
-  plugin_context::{LoadCallback, PluginContextImpl},
+  HookUsage, PluginContext, PluginHookMeta, PluginOrder,
+  plugin_context::NativePluginContextImpl,
   type_aliases::{IndexPluginContext, IndexPluginable},
   types::plugin_idx::PluginIdx,
 };
@@ -34,8 +35,9 @@ pub struct PluginDriver {
   pub file_emitter: SharedFileEmitter,
   pub watch_files: Arc<FxDashSet<ArcStr>>,
   pub modules: Arc<FxDashMap<ArcStr, Arc<ModuleInfo>>>,
-  pub context_load_modules: Arc<FxDashMap<ArcStr, LoadCallback>>,
   pub(crate) tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<ModuleLoaderMsg>>>>,
+  pub(crate) plugin_usage_vec: IndexVec<PluginIdx, HookUsage>,
+  options: SharedNormalizedBundlerOptions,
 }
 
 impl PluginDriver {
@@ -47,8 +49,8 @@ impl PluginDriver {
   ) -> SharedPluginDriver {
     let watch_files = Arc::new(DashSet::default());
     let modules = Arc::new(DashMap::default());
-    let context_load_modules = Arc::new(DashMap::default());
     let tx = Arc::new(Mutex::new(None));
+    let mut plugin_usage_vec = IndexVec::new();
 
     Arc::new_cyclic(|plugin_driver| {
       let mut index_plugins = IndexPluginable::with_capacity(plugins.len());
@@ -56,21 +58,18 @@ impl PluginDriver {
 
       plugins.into_iter().for_each(|plugin| {
         let plugin_idx = index_plugins.push(Arc::clone(&plugin));
-        index_contexts.push(
-          PluginContextImpl {
-            skipped_resolve_calls: vec![],
-            plugin_idx,
-            plugin_driver: Weak::clone(plugin_driver),
-            resolver: Arc::clone(resolver),
-            file_emitter: Arc::clone(file_emitter),
-            modules: Arc::clone(&modules),
-            options: Arc::clone(options),
-            watch_files: Arc::clone(&watch_files),
-            context_load_modules: Arc::clone(&context_load_modules),
-            tx: Arc::clone(&tx),
-          }
-          .into(),
-        );
+        plugin_usage_vec.push(plugin.call_hook_usage());
+        index_contexts.push(PluginContext::Native(Arc::new(NativePluginContextImpl {
+          skipped_resolve_calls: vec![],
+          plugin_idx,
+          plugin_driver: Weak::clone(plugin_driver),
+          resolver: Arc::clone(resolver),
+          file_emitter: Arc::clone(file_emitter),
+          modules: Arc::clone(&modules),
+          options: Arc::clone(options),
+          watch_files: Arc::clone(&watch_files),
+          tx: Arc::clone(&tx),
+        })));
       });
 
       Self {
@@ -80,8 +79,9 @@ impl PluginDriver {
         file_emitter: Arc::clone(file_emitter),
         watch_files,
         modules,
-        context_load_modules,
         tx,
+        plugin_usage_vec,
+        options: Arc::clone(options),
       }
     })
   }
@@ -104,9 +104,13 @@ impl PluginDriver {
     *tx_guard = tx;
   }
 
-  pub async fn mark_context_load_modules_loaded(&self, module_id: &ModuleId) -> anyhow::Result<()> {
-    if let Some((_, callback)) = self.context_load_modules.remove(module_id.resource_id()) {
-      callback().await?;
+  pub async fn mark_context_load_modules_loaded(
+    &self,
+    module_id: &ModuleId,
+    success: bool,
+  ) -> anyhow::Result<()> {
+    if let Some(mark_module_loaded) = &self.options.mark_module_loaded {
+      mark_module_loaded.call(module_id, success).await?;
     }
     Ok(())
   }

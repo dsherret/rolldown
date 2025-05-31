@@ -11,6 +11,7 @@ pub mod ambiguous_external_namespace;
 pub mod assign_to_import;
 pub mod circular_dependency;
 pub mod commonjs_variable_in_esm;
+pub mod configuration_field_conflict;
 pub mod eval;
 pub mod export_undefined_variable;
 pub mod external_entry;
@@ -29,12 +30,9 @@ pub mod missing_name_option_for_umd_export;
 pub mod mixed_export;
 pub mod parse_error;
 pub mod resolve_error;
-pub mod sourcemap_error;
 pub mod unhandleable_error;
 pub mod unloadable_dependency;
 pub mod unresolved_entry;
-pub mod unresolved_import;
-pub mod unresolved_import_treated_as_external;
 pub mod unsupported_feature;
 
 pub trait BuildEvent: Debug + Sync + Send {

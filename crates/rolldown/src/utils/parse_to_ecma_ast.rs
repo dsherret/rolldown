@@ -1,11 +1,8 @@
 use std::path::Path;
 
 use arcstr::ArcStr;
-use oxc::{
-  semantic::{ScopeTree, SymbolTable},
-  span::SourceType as OxcSourceType,
-};
-use rolldown_common::{ModuleType, NormalizedBundlerOptions, RUNTIME_MODULE_ID, StrOrBytes};
+use oxc::{semantic::Scoping, span::SourceType as OxcSourceType};
+use rolldown_common::{ModuleType, NormalizedBundlerOptions, RUNTIME_MODULE_KEY, StrOrBytes};
 use rolldown_ecmascript::{EcmaAst, EcmaCompiler};
 use rolldown_error::{BuildDiagnostic, BuildResult};
 use rolldown_loader_utils::{binary_to_esm, text_to_string_literal};
@@ -29,13 +26,12 @@ fn pure_esm_js_oxc_source_type() -> OxcSourceType {
 
 pub struct ParseToEcmaAstResult {
   pub ast: EcmaAst,
-  pub symbol_table: SymbolTable,
-  pub scope_tree: ScopeTree,
+  pub scoping: Scoping,
   pub has_lazy_export: bool,
   pub warning: Vec<BuildDiagnostic>,
 }
 
-pub fn parse_to_ecma_ast(
+pub async fn parse_to_ecma_ast(
   ctx: &CreateModuleContext<'_>,
   source: StrOrBytes,
 ) -> BuildResult<ParseToEcmaAstResult> {
@@ -59,20 +55,10 @@ pub fn parse_to_ecma_ast(
     let default = pure_esm_js_oxc_source_type();
     match parsed_type {
       OxcParseType::Js => default,
-      OxcParseType::Jsx => {
-        if options.jsx.is_jsx_disabled() {
-          default
-        } else {
-          default.with_jsx(true)
-        }
-      }
+      OxcParseType::Jsx => default.with_jsx(!options.transform_options.is_jsx_disabled()),
       OxcParseType::Ts => default.with_typescript(true),
       OxcParseType::Tsx => {
-        if options.jsx.is_jsx_disabled() {
-          default.with_typescript(true)
-        } else {
-          default.with_typescript(true).with_jsx(true)
-        }
+        default.with_typescript(true).with_jsx(!options.transform_options.is_jsx_disabled())
       }
     }
   };
@@ -84,12 +70,16 @@ pub fn parse_to_ecma_ast(
     _ => EcmaCompiler::parse(stable_id, source, oxc_source_type)?,
   };
 
-  ecma_ast = plugin_driver.transform_ast(HookTransformAstArgs {
-    cwd: &options.cwd,
-    ast: ecma_ast,
-    id: stable_id,
-    is_user_defined_entry,
-  })?;
+  ecma_ast = plugin_driver
+    .transform_ast(HookTransformAstArgs {
+      cwd: &options.cwd,
+      ast: ecma_ast,
+      id: resolved_id.id.as_str(),
+      stable_id,
+      is_user_defined_entry,
+      module_type,
+    })
+    .await?;
 
   PreProcessEcmaAst::default().build(
     ecma_ast,
@@ -145,7 +135,7 @@ fn pre_process_source(
     ModuleType::Binary => {
       let source = source.into_bytes();
       let encoded = rolldown_utils::base64::to_standard_base64(source);
-      binary_to_esm(&encoded, options.platform, RUNTIME_MODULE_ID)
+      binary_to_esm(&encoded, options.platform, RUNTIME_MODULE_KEY)
     }
     ModuleType::Empty => String::new(),
     ModuleType::Custom(custom_type) => {

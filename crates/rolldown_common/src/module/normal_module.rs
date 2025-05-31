@@ -1,29 +1,24 @@
-use std::fmt::Debug;
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 use crate::css::css_view::CssView;
-use crate::ecmascript::ecma_view::EsmNamespaceInCjs;
 use crate::types::module_render_output::ModuleRenderOutput;
 use crate::{
-  AssetView, Comments, DebugStmtInfoForTreeShaking, ExportsKind, ImportRecordIdx, ImportRecordMeta,
-  ModuleId, ModuleIdx, ModuleInfo, NormalizedBundlerOptions, RawImportRecord, RuntimeModuleBrief,
-  StmtInfo, SymbolRef, SymbolRefDb,
+  AssetView, DebugStmtInfoForTreeShaking, ExportsKind, ImportRecordIdx, ImportRecordMeta,
+  LegalComments, ModuleId, ModuleIdx, ModuleInfo, NormalizedBundlerOptions, RawImportRecord,
+  ResolvedId, StmtInfo,
 };
 use crate::{EcmaAstIdx, EcmaView, IndexModules, Interop, Module, ModuleType};
 use std::ops::{Deref, DerefMut};
 
-use itertools::Either;
-use oxc::codegen::LegalComment;
+use itertools::Itertools;
 use oxc_index::IndexVec;
 use rolldown_ecmascript::{EcmaAst, EcmaCompiler, PrintOptions};
 use rolldown_rstr::Rstr;
 use rolldown_sourcemap::collapse_sourcemaps;
-use rolldown_utils::concat_string;
-use rolldown_utils::ecmascript::legitimize_identifier_name;
 use rustc_hash::FxHashSet;
 use string_wizard::SourceMapOptions;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NormalModule {
   pub exec_order: u32,
   pub idx: ModuleIdx,
@@ -38,6 +33,7 @@ pub struct NormalModule {
   pub ecma_view: EcmaView,
   pub css_view: Option<CssView>,
   pub asset_view: Option<AssetView>,
+  pub originative_resolved_id: ResolvedId,
 }
 
 impl NormalModule {
@@ -95,13 +91,12 @@ impl NormalModule {
       dynamically_imported_ids: self.ecma_view.dynamically_imported_ids.clone(),
       // https://github.com/rollup/rollup/blob/7a8ac460c62b0406a749e367dbd0b74973282449/src/Module.ts#L331
       exports: {
-        let mut exports =
-          self.ecma_view.named_exports.keys().map(|e| e.as_str().into()).collect::<Vec<_>>();
+        let mut exports = self.ecma_view.named_exports.keys().cloned().collect_vec();
         if let Some(e) = raw_import_records {
           exports.extend(
             e.iter()
               .filter(|&rec| rec.meta.contains(ImportRecordMeta::IS_EXPORT_STAR))
-              .map(|_| "*".into()),
+              .map(|_| Rstr::from("*")),
           );
         } else {
           exports.extend(
@@ -110,7 +105,7 @@ impl NormalModule {
               .import_records
               .iter()
               .filter(|&rec| rec.meta.contains(ImportRecordMeta::IS_EXPORT_STAR))
-              .map(|_| "*".into()),
+              .map(|_| Rstr::from("*")),
           );
         }
         exports
@@ -218,18 +213,18 @@ impl NormalModule {
       ModuleRenderArgs::Ecma { ast } => {
         let enable_sourcemap = options.sourcemap.is_some() && !self.is_virtual();
 
-        let comments = match options.comments {
-          Comments::None => Either::Left(false),
-          Comments::Preserve => Either::Left(true),
-          Comments::PreserveLegal => Either::Right(LegalComment::Inline),
-        };
+        let print_legal_comments = matches!(options.legal_comments, LegalComments::Inline);
 
         // Because oxc codegen sourcemap is last of sourcemap chain,
         // If here no extra sourcemap need remapping, we using it as final module sourcemap.
         // So here make sure using correct `source_name` and `source_content.
         let render_output = EcmaCompiler::print_with(
           ast,
-          PrintOptions { sourcemap: enable_sourcemap, filename: self.id.to_string(), comments },
+          PrintOptions {
+            sourcemap: enable_sourcemap,
+            filename: self.id.to_string(),
+            print_legal_comments,
+          },
         );
         if !self.ecma_view.mutations.is_empty() {
           let original_code: Arc<str> = render_output.code.into();
@@ -253,74 +248,6 @@ impl NormalModule {
 
   pub fn is_included(&self) -> bool {
     self.ecma_view.meta.is_included()
-  }
-
-  /// Generates
-  /// ```js
-  /// var import_xxx = __toESM(require_xxx());
-  /// ```
-  pub fn generate_esm_namespace_in_cjs_stmt(
-    &mut self,
-    symbol_db: &mut SymbolRefDb,
-    runtime_module: &RuntimeModuleBrief,
-    wrap_ref: SymbolRef,
-  ) {
-    if self.esm_namespace_in_cjs.is_some() {
-      return;
-    }
-    let esm_namespace_ref_derived_from_module_exports = symbol_db.create_facade_root_symbol_ref(
-      self.idx,
-      &concat_string!("import_", legitimize_identifier_name(&self.repr_name)),
-    );
-
-    let stmt_info_idx = self.stmt_infos.add_stmt_info(StmtInfo {
-      stmt_idx: None,
-      declared_symbols: vec![esm_namespace_ref_derived_from_module_exports],
-      referenced_symbols: vec![wrap_ref.into(), runtime_module.resolve_symbol("__toESM").into()],
-      force_tree_shaking: true,
-      #[cfg(debug_assertions)]
-      debug_label: Some("esm_namespace_ref_derived_from_module_exports".to_string()),
-      ..Default::default()
-    });
-
-    self.esm_namespace_in_cjs = Some(EsmNamespaceInCjs {
-      namespace_ref: esm_namespace_ref_derived_from_module_exports,
-      stmt_info_idx,
-    });
-  }
-
-  /// Generates
-  /// ```js
-  /// var import_xxx = __toESM(require_xxx(), 1);
-  /// ```
-  pub fn generate_esm_namespace_in_cjs_node_mode_stmt(
-    &mut self,
-    symbol_db: &mut SymbolRefDb,
-    runtime_module: &RuntimeModuleBrief,
-    wrap_ref: SymbolRef,
-  ) {
-    if self.esm_namespace_in_cjs_node_mode.is_some() {
-      return;
-    }
-    let esm_namespace_ref_derived_from_module_exports = symbol_db.create_facade_root_symbol_ref(
-      self.idx,
-      &concat_string!("import_", legitimize_identifier_name(&self.repr_name)),
-    );
-
-    let stmt_info_idx = self.stmt_infos.add_stmt_info(StmtInfo {
-      stmt_idx: None,
-      declared_symbols: vec![esm_namespace_ref_derived_from_module_exports],
-      referenced_symbols: vec![wrap_ref.into(), runtime_module.resolve_symbol("__toESM").into()],
-      #[cfg(debug_assertions)]
-      debug_label: Some("esm_namespace_ref_derived_from_module_exports node".to_string()),
-      force_tree_shaking: true,
-      ..Default::default()
-    });
-
-    self.esm_namespace_in_cjs_node_mode = Some(EsmNamespaceInCjs {
-      namespace_ref: esm_namespace_ref_derived_from_module_exports,
-      stmt_info_idx,
-    });
   }
 
   #[expect(clippy::cast_precision_loss)]

@@ -1,3 +1,4 @@
+pub mod binding_hmr_output;
 pub mod binding_log;
 pub mod binding_log_level;
 pub mod binding_minify_options;
@@ -11,6 +12,8 @@ pub mod binding_rendered_module;
 pub mod binding_resolve_alias_item;
 pub mod binding_resolve_extension_alias;
 pub mod binding_sourcemap;
+pub mod binding_string_or_regex;
 pub mod binding_watcher_event;
 pub mod defer_sync_scan_data;
 pub mod js_callback;
+pub mod js_regex;

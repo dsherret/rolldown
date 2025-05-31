@@ -1,25 +1,26 @@
 name: Benchmarks Rust
 
+permissions: {}
+
 on:
+  workflow_dispatch:
   push:
     branches:
       - 'main'
     paths:
       - '**/*.rs'
-      - '**/*.toml'
-      - '.github/workflows/**'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'scripts/misc/setup-benchmark-input/**'
+      - '.github/workflows/benchmark-rust.yml'
   pull_request:
     types: [opened, synchronize]
     paths:
       - '**/*.rs'
-      - '**/*.toml'
-      - '.github/workflows/**'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-  workflow_dispatch:
+      - 'scripts/misc/setup-benchmark-input/**'
+      - '.github/workflows/benchmark-rust.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
@@ -30,20 +31,17 @@ jobs:
     name: Codspeed Benchmark
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Branch
-        uses: actions/checkout@v4
-        with:
-          # Whether Pull submodules for additional files
-          submodules: false
+      - uses: taiki-e/checkout-action@b13d20b7cda4e2f325ef19895128f7ff735c0b3d # v1.3.1
 
       - name: Setup Node
         uses: ./.github/actions/setup-node
 
       - name: Setup Rust
-        uses: ./.github/actions/setup-rust
+        uses: oxc-project/setup-rust@cd82e1efec7fef815e2c23d296756f31c7cdc03d # v1.0.0
         with:
           tools: just, cargo-codspeed
-          cache-key: release-build
+          cache-key: codspeed
+          save-cache: ${{ github.ref_name == 'main' }}
 
       - name: Setup Benchmark Input
         run: just setup-bench
@@ -52,7 +50,7 @@ jobs:
         run: cargo codspeed build -p bench --features codspeed
 
       - name: Run the benchmarks
-        uses: CodSpeedHQ/action@v3
+        uses: CodSpeedHQ/action@0010eb0ca6e89b80c88e8edaaa07cfe5f3e6664d # v3.5.0
         with:
           run: cargo codspeed run -p bench
           token: ${{ secrets.CODSPEED_TOKEN }}
@@ -68,20 +66,16 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR Branch
-        uses: actions/checkout@v4
-        with:
-          # Whether Pull submodules for additional files
-          submodules: false
+      - uses: taiki-e/checkout-action@b13d20b7cda4e2f325ef19895128f7ff735c0b3d # v1.3.1
 
       - name: Setup Node
         uses: ./.github/actions/setup-node
 
       - name: Setup Rust
-        uses: ./.github/actions/setup-rust
+        uses: oxc-project/setup-rust@cd82e1efec7fef815e2c23d296756f31c7cdc03d # v1.0.0
         with:
           tools: just, critcmp
-          cache-key: release-build
+          cache-key: rust-benchmark
 
       - name: Setup Benchmark Input
         run: just setup-bench
@@ -90,10 +84,11 @@ jobs:
         run: cargo bench -p bench -- --save-baseline pr
 
       - name: Checkout Target Branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           clean: false
           ref: ${{ github.event.pull_request.base.ref }}
+          persist-credentials: false
 
       - name: Run Bench on Target Branch
         run: cargo bench -p bench -- --save-baseline target
@@ -101,10 +96,15 @@ jobs:
       - name: Compare Bench Results
         id: bench_comparison
         shell: bash
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha  }}
         run: |
           echo "### Benchmarks Rust" > output
-          echo "- target: \`${{ github.event.pull_request.base.ref }}\`(${{ github.event.pull_request.base.sha }})" >> output
-          echo "- pr: \`${{ github.event.pull_request.head.ref }}\`(${{ github.event.pull_request.head.sha }})" >> output
+          echo "- target: \`${BASE_REF}\`(${BASE_SHA})" >> output
+          echo "- pr: \`${HEAD_REF}\`(${HEAD_SHA})" >> output
           echo "\`\`\`"  >> output
           critcmp target pr >> output
           echo "\`\`\`" >> output
@@ -116,7 +116,7 @@ jobs:
           echo "::set-output name=comment::$comment"
 
       - name: Find Comment
-        uses: peter-evans/find-comment@v3
+        uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
         id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -124,7 +124,7 @@ jobs:
           body-includes: Benchmarks Rust
 
       - name: Write a new comment
-        uses: peter-evans/create-or-update-comment@v4.0.0
+        uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4.0.0
         continue-on-error: true
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,9 +1,9 @@
-use std::path::Path;
+use std::{borrow::Cow, path::Path};
 
-use oxc::transformer::{ESTarget, InjectGlobalVariablesConfig, TransformOptions};
+use oxc::transformer_plugins::InjectGlobalVariablesConfig;
 use rolldown_common::{
-  Comments, GlobalsOutputOption, InjectImport, MinifyOptions, ModuleType, NormalizedBundlerOptions,
-  OutputFormat, Platform,
+  GlobalsOutputOption, InjectImport, LegalComments, MinifyOptions, ModuleType,
+  NormalizedBundlerOptions, OutputFormat, Platform,
 };
 use rolldown_error::{BuildDiagnostic, InvalidOptionType};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -83,47 +83,45 @@ pub fn normalize_options(mut raw_options: crate::BundlerOptions) -> NormalizeOpt
           .entry("import.meta.filename".to_string())
           .or_insert_with(|| "import.meta.filename".to_string());
       }
-    };
-  };
+    }
+  }
 
   let define = raw_define.into_iter().collect();
 
   // Take out resolve options
-  let raw_resolve = std::mem::take(&mut raw_options.resolve).unwrap_or_default();
+  let mut raw_resolve = std::mem::take(&mut raw_options.resolve).unwrap_or_default();
 
-  let mut loaders = FxHashMap::from(
+  // https://github.com/evanw/esbuild/blob/ea453bf687c8e5cf3c5f11aae372c5ca33be0c98/pkg/api/api_impl.go#L1403-L1405
+  // https://github.com/evanw/esbuild/commit/5abe0715f9be662b182989d2f38a44c7c8b28a2d
+  if raw_resolve.condition_names.is_none() && matches!(platform, Platform::Browser | Platform::Node)
+  {
+    raw_resolve.condition_names = Some(vec!["module".to_string()]);
+  }
+
+  let mut module_types: FxHashMap<Cow<'static, str>, ModuleType> = FxHashMap::from(
     [
-      ("js".to_string(), ModuleType::Js),
-      ("mjs".to_string(), ModuleType::Js),
-      ("cjs".to_string(), ModuleType::Js),
-      ("jsx".to_string(), ModuleType::Jsx),
-      ("ts".to_string(), ModuleType::Ts),
-      ("mts".to_string(), ModuleType::Ts),
-      ("cts".to_string(), ModuleType::Ts),
-      ("tsx".to_string(), ModuleType::Tsx),
-      ("json".to_string(), ModuleType::Json),
-      ("txt".to_string(), ModuleType::Text),
-      ("css".to_string(), ModuleType::Css),
+      ("js".into(), ModuleType::Js),
+      ("mjs".into(), ModuleType::Js),
+      ("cjs".into(), ModuleType::Js),
+      ("jsx".into(), ModuleType::Jsx),
+      ("ts".into(), ModuleType::Ts),
+      ("mts".into(), ModuleType::Ts),
+      ("cts".into(), ModuleType::Ts),
+      ("tsx".into(), ModuleType::Tsx),
+      ("json".into(), ModuleType::Json),
+      ("txt".into(), ModuleType::Text),
+      ("css".into(), ModuleType::Css),
     ]
     .into_iter()
     .collect(),
   );
 
-  let user_defined_loaders: FxHashMap<String, ModuleType> = raw_options
-    .module_types
-    .map(|loaders| {
-      loaders
-        .into_iter()
-        .map(|(ext, value)| {
-          let stripped = ext.strip_prefix('.').map(ToString::to_string).unwrap_or(ext);
-
-          (stripped, value)
-        })
-        .collect()
-    })
-    .unwrap_or_default();
-
-  loaders.extend(user_defined_loaders);
+  if let Some(user_defined_loaders) = raw_options.module_types {
+    user_defined_loaders.into_iter().for_each(|(ext, value)| {
+      let stripped = ext.strip_prefix('.').map(ToString::to_string).unwrap_or(ext);
+      module_types.insert(Cow::Owned(stripped), value);
+    });
+  }
 
   let globals = raw_options.globals.unwrap_or(GlobalsOutputOption::FxHashMap(FxHashMap::default()));
 
@@ -136,14 +134,14 @@ pub fn normalize_options(mut raw_options: crate::BundlerOptions) -> NormalizeOpt
           .iter()
           .map(|raw| match raw {
             InjectImport::Named { imported, alias, from } => {
-              oxc::transformer::InjectImport::named_specifier(
+              oxc::transformer_plugins::InjectImport::named_specifier(
                 from,
                 Some(imported),
                 alias.as_deref().unwrap_or(imported),
               )
             }
             InjectImport::Namespace { alias, from } => {
-              oxc::transformer::InjectImport::namespace_specifier(from, alias)
+              oxc::transformer_plugins::InjectImport::namespace_specifier(from, alias)
             }
           })
           .collect()
@@ -152,6 +150,9 @@ pub fn normalize_options(mut raw_options: crate::BundlerOptions) -> NormalizeOpt
   );
 
   let mut experimental = raw_options.experimental.unwrap_or_default();
+  if experimental.hmr.is_some() {
+    experimental.incremental_build = Some(true);
+  }
   let is_advanced_chunks_enabled = raw_options
     .advanced_chunks
     .as_ref()
@@ -176,16 +177,12 @@ pub fn normalize_options(mut raw_options: crate::BundlerOptions) -> NormalizeOpt
         .unwrap_or_default()
     },
   );
-
-  let target = raw_options.target.unwrap_or_default();
-  let base_transform_options = TransformOptions::from(ESTarget::from(target));
+  let cwd =
+    raw_options.cwd.unwrap_or_else(|| std::env::current_dir().expect("Failed to get current dir"));
   let normalized = NormalizedBundlerOptions {
     input: raw_options.input.unwrap_or_default(),
-    cwd: raw_options
-      .cwd
-      .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current dir")),
     external: raw_options.external,
-    treeshake: raw_options.treeshake,
+    treeshake: raw_options.treeshake.into_normalized_options(),
     platform,
     name: raw_options.name,
     entry_filenames: raw_options.entry_filenames.unwrap_or_else(|| "[name].js".to_string().into()),
@@ -219,7 +216,7 @@ pub fn normalize_options(mut raw_options: crate::BundlerOptions) -> NormalizeOpt
     sourcemap_path_transform: raw_options.sourcemap_path_transform,
     sourcemap_debug_ids: raw_options.sourcemap_debug_ids.unwrap_or(false),
     shim_missing_exports: raw_options.shim_missing_exports.unwrap_or(false),
-    module_types: loaders,
+    module_types,
     experimental,
     // https://github.com/evanw/esbuild/blob/d34e79e2a998c21bb71d57b92b0017ca11756912/internal/bundler/bundler.go#L2767
     profiler_names: raw_options.profiler_names.unwrap_or(!minify.is_enabled()),
@@ -231,16 +228,33 @@ pub fn normalize_options(mut raw_options: crate::BundlerOptions) -> NormalizeOpt
     external_live_bindings: raw_options.external_live_bindings.unwrap_or(true),
     inline_dynamic_imports,
     advanced_chunks: raw_options.advanced_chunks,
-    checks: raw_options.checks.unwrap_or_default(),
-    jsx: raw_options.jsx.unwrap_or_default(),
+    checks: raw_options.checks.unwrap_or_default().into(),
     watch: raw_options.watch.unwrap_or_default(),
-    comments: raw_options.comments.unwrap_or(Comments::Preserve),
+    legal_comments: raw_options.legal_comments.unwrap_or(LegalComments::Inline),
     drop_labels: FxHashSet::from_iter(raw_options.drop_labels.unwrap_or_default()),
-    target,
     keep_names: raw_options.keep_names.unwrap_or_default(),
     polyfill_require: raw_options.polyfill_require.unwrap_or(true),
     defer_sync_scan_data: raw_options.defer_sync_scan_data,
-    base_transform_options,
+    transform_options: raw_options.transform.unwrap_or_default(),
+    make_absolute_externals_relative: raw_options
+      .make_absolute_externals_relative
+      .unwrap_or_default(),
+    invalidate_js_side_cache: raw_options.invalidate_js_side_cache,
+    mark_module_loaded: raw_options.mark_module_loaded,
+    log_level: raw_options.log_level,
+    on_log: raw_options.on_log,
+    preserve_modules: raw_options.preserve_modules.unwrap_or_default(),
+    virtual_dirname: raw_options.virtual_dirname.unwrap_or_else(|| "_virtual".to_string()),
+    preserve_modules_root: raw_options.preserve_modules_root.map(|preserve_modules_root| {
+      let p = Path::new(&preserve_modules_root);
+      if p.is_absolute() {
+        preserve_modules_root
+      } else {
+        cwd.join(p).to_string_lossy().to_string()
+      }
+    }),
+    cwd,
+    preserve_entry_signatures: raw_options.preserve_entry_signatures.unwrap_or_default(),
   };
 
   NormalizeOptionsReturn { options: normalized, resolve_options: raw_resolve, warnings }

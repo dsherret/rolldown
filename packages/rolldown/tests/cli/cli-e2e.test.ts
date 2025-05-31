@@ -12,7 +12,7 @@ function cliFixturesDir(...joined: string[]) {
 // remove `Finished in x ms` since it is not deterministic
 // remove Ansi colors for snapshot testing
 function cleanStdout(stdout: string) {
-  return stripAnsi(stdout).replace(/Finished in \d+(\.\d+)? ms/g, '')
+  return stripAnsi(stdout).replace(/Finished in \d+(\.\d+)? (s|ms|us|ns)/g, '')
 }
 
 describe('should not hang after running', () => {
@@ -40,6 +40,13 @@ describe('basic arguments', () => {
 })
 
 describe('cli options for bundling', () => {
+  it('should handle `--input` and positional args as entries', async () => {
+    const cwd = cliFixturesDir('cli-multi-entries')
+    const status = await $({ cwd })`rolldown 1.ts --input ./2.js`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
+
   it('should handle single boolean option', async () => {
     const cwd = cliFixturesDir('cli-option-boolean')
     const status = await $({ cwd })`rolldown index.ts --minify -d dist`
@@ -103,107 +110,125 @@ describe('cli options for bundling', () => {
     expect(status.exitCode).toBe(0)
     expect(cleanStdout(status.stdout)).toMatchSnapshot()
   })
+
+  it('validate cli options', async () => {
+    const cwd = cliFixturesDir('cli-option-object')
+    try {
+      await $({ cwd })`rolldown index.ts --format INCORRECT`
+      expect.unreachable()
+    } catch (error: any) {
+      expect(error.message).matchSnapshot()
+    }
+  })
 })
 
 describe('config', () => {
-  describe('no package.json', () => {
-    it('should bundle in ext-js-syntax-cjs', async () => {
-      const cwd = cliFixturesDir('ext-js-syntax-cjs')
-      const status = await $({ cwd })`rolldown -c rolldown.config.js`
-      expect(status.exitCode).toBe(0)
-      expect(cleanStdout(status.stdout)).toMatchSnapshot()
-    })
-    it('should not bundle in ext-js-syntax-esm', async () => {
-      const cwd = cliFixturesDir('ext-js-syntax-esm')
-      try {
-        const _ = await $({ cwd })`rolldown -c rolldown.config.js`
-      } catch (err) {
-        expect(err).not.toBeUndefined()
-      }
-    })
-    it('should allow loading ts config', async () => {
-      const cwd = cliFixturesDir('ext-ts')
-      const status = await $({
-        cwd,
-      })`rolldown -c rolldown.config.ts`
-      expect(status.exitCode).toBe(0)
-      expect(cleanStdout(status.stdout)).toMatchSnapshot()
-    })
-    it('should allow loading cts config', async () => {
-      const cwd = cliFixturesDir('ext-cts')
-      const status = await $({
-        cwd,
-      })`rolldown -c rolldown.config.cts`
-      expect(status.exitCode).toBe(0)
-      expect(cleanStdout(status.stdout)).toMatchSnapshot()
-    })
-    it('should allow loading mts config', async () => {
-      const cwd = cliFixturesDir('ext-mts')
-      const status = await $({
-        cwd,
-      })`rolldown -c rolldown.config.mts`
-      expect(status.exitCode).toBe(0)
-      expect(cleanStdout(status.stdout)).toMatchSnapshot()
-    })
-    it('should allow loading ts config with tsx', async () => {
-      const cwd = cliFixturesDir('ext-ts')
-      const status = await $({
-        cwd,
-        env: { NODE_OPTIONS: '--import=tsx' },
-      })`rolldown -c rolldown.config.ts`
-      expect(status.exitCode).toBe(0)
-      expect(cleanStdout(status.stdout)).toMatchSnapshot()
-    })
+  it('should bundle in ext-js-syntax-cjs', async () => {
+    const cwd = cliFixturesDir('ext-js-syntax-cjs')
+    const status = await $({ cwd })`rolldown -c rolldown.config.js`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
+  it('should not bundle in ext-js-syntax-esm', async () => {
+    const cwd = cliFixturesDir('ext-js-syntax-esm')
+    try {
+      const _ = await $({ cwd })`rolldown -c rolldown.config.js`
+    } catch (err) {
+      expect(err).not.toBeUndefined()
+    }
+  })
+  it('should allow loading ts config', async () => {
+    const cwd = cliFixturesDir('ext-ts')
+    const status = await $({
+      cwd,
+    })`rolldown -c rolldown.config.ts`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
+  it('should allow loading cts config', async () => {
+    const cwd = cliFixturesDir('ext-cts')
+    const status = await $({
+      cwd,
+    })`rolldown -c rolldown.config.cts`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
+  it('should allow loading mts config', async () => {
+    const cwd = cliFixturesDir('ext-mts')
+    const status = await $({
+      cwd,
+    })`rolldown -c rolldown.config.mts`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
+  it('should allow loading ts config with tsx', async () => {
+    const cwd = cliFixturesDir('ext-ts')
+    const status = await $({
+      cwd,
+      env: { NODE_OPTIONS: '--import=tsx' },
+    })`rolldown -c rolldown.config.ts`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
 
-    it('should allow loading ts config from non-working dir', async () => {
-      const cwd = cliFixturesDir()
-      const status = await $({ cwd })`rolldown -c ./ext-ts/rolldown.config.ts`
-      expect(status.exitCode).toBe(0)
-      expect(cleanStdout(status.stdout)).toMatchSnapshot()
-    })
+  it('should allow loading ts config with oxnode', async () => {
+    const cwd = cliFixturesDir('ext-ts')
+    const status = await $({
+      cwd,
+      env: { NODE_OPTIONS: '--import=@oxc-node/core/register' },
+    })`rolldown -c rolldown.config.ts`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
 
-    it('should allow multiply options', async () => {
-      const cwd = cliFixturesDir('config-multiply-options')
-      const status = await $({
-        cwd,
-      })`rolldown -c rolldown.config.ts`
-      expect(status.exitCode).toBe(0)
-      expect(cleanStdout(status.stdout)).toMatchSnapshot()
-    })
+  it('should allow loading ts config from non-working dir', async () => {
+    const cwd = cliFixturesDir()
+    const status = await $({ cwd })`rolldown -c ./ext-ts/rolldown.config.ts`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
 
-    it('should allow multiply output', async () => {
-      const cwd = cliFixturesDir('config-multiply-output')
-      const status = await $({
-        cwd,
-      })`rolldown -c rolldown.config.ts`
-      expect(status.exitCode).toBe(0)
-      expect(cleanStdout(status.stdout)).toMatchSnapshot()
-    })
+  it('should allow multiply options', async () => {
+    const cwd = cliFixturesDir('config-multiply-options')
+    const status = await $({
+      cwd,
+    })`rolldown -c rolldown.config.ts`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
 
-    it('should allow multiply output + call options hook once  + call outputOptions hook', async () => {
-      const cwd = cliFixturesDir('config-multiply-output-with-options-hooks')
-      const status = await $({
-        cwd,
-      })`rolldown -c rolldown.config.ts`
-      expect(status.exitCode).toBe(0)
-      expect(cleanStdout(status.stdout)).toMatchSnapshot()
-    })
+  it('should allow multiply output', async () => {
+    const cwd = cliFixturesDir('config-multiply-output')
+    const status = await $({
+      cwd,
+    })`rolldown -c rolldown.config.ts`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
 
-    it('should resolve rolldown.config.cjs', async () => {
-      const cwd = cliFixturesDir('cli-with-config')
-      const status = await $({ cwd })`rolldown -c`
-      expect(status.exitCode).toBe(0)
-      expect(cleanStdout(status.stdout)).toMatchSnapshot()
-    })
+  it('should allow multiply output + call options hook once  + call outputOptions hook', async () => {
+    const cwd = cliFixturesDir('config-multiply-output-with-options-hooks')
+    const status = await $({
+      cwd,
+    })`rolldown -c rolldown.config.ts`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
 
-    it('should failed to resolve rolldown.config files', async () => {
-      const cwd = cliFixturesDir('cli-without-config')
-      try {
-        const _ = await $({ cwd })`rolldown -c`
-      } catch (err) {
-        expect(err).not.toBeUndefined()
-      }
-    })
+  it('should resolve rolldown.config.cjs', async () => {
+    const cwd = cliFixturesDir('cli-with-config')
+    const status = await $({ cwd })`rolldown -c`
+    expect(status.exitCode).toBe(0)
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
+
+  it('should failed to resolve rolldown.config files', async () => {
+    const cwd = cliFixturesDir('cli-without-config')
+    try {
+      const _ = await $({ cwd })`rolldown -c`
+    } catch (err) {
+      expect(err).not.toBeUndefined()
+    }
   })
 })
 
@@ -273,5 +298,17 @@ describe('watch cli', () => {
     const status = await $({ cwd })`rolldown -c`
     expect(cleanStdout(status.stdout)).toMatchSnapshot()
     expect(status.exitCode).toBe(0)
+  })
+
+  it('should require both ROLLDOWN_WATCH and this.meta.watchMode to be false', async () => {
+    const cwd = cliFixturesDir('watch-mode')
+    const status = await $({ cwd })`rolldown -c`
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
+  })
+
+  it('should require both ROLLDOWN_WATCH and this.meta.watchMode to be true', async () => {
+    const cwd = cliFixturesDir('watch-mode')
+    const status = await $({ cwd })`rolldown -w -c`
+    expect(cleanStdout(status.stdout)).toMatchSnapshot()
   })
 })

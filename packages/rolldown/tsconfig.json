@@ -12,10 +12,11 @@
   "compilerOptions": {
     "composite": true,
     "rootDir": "./src",
-    "outDir": "./dist/types",
+    "outDir": "./dist",
     "resolveJsonModule": true,
     "noEmit": false,
-    "tsBuildInfoFile": ".tsbuildinfo",
-    "emitDeclarationOnly": true
+    "emitDeclarationOnly": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true
   }
 }

@@ -6,7 +6,6 @@ use rolldown_common::{
 };
 use rolldown_utils::{
   concat_string,
-  ecmascript::legitimize_identifier_name,
   rayon::{IntoParallelRefIterator, ParallelIterator},
 };
 
@@ -42,24 +41,15 @@ impl LinkStage<'_> {
         // - Mutating and parallel reading is in different memory locations
         let stmt_infos = unsafe { &mut *(addr_of!(importer.stmt_infos).cast_mut()) };
         let importer_side_effect = unsafe { &mut *(addr_of!(importer.side_effects).cast_mut()) };
+        let mut symbols_to_be_declared = vec![];
 
-        stmt_infos.infos.iter_mut_enumerated().for_each(|(_stmt_idx, stmt_info)| {
+        stmt_infos.infos.iter_mut_enumerated().for_each(|(stmt_info_idx, stmt_info)| {
+          if stmt_info.meta.contains(StmtInfoMeta::HasDummyRecord) {
+            stmt_info.referenced_symbols.push(self.runtime.resolve_symbol("__require").into());
+          }
           stmt_info.import_records.iter().for_each(|rec_id| {
             let rec = &importer.import_records[*rec_id];
-            if rec.is_dummy() {
-              if matches!(rec.kind, ImportKind::Require) {
-                if self.options.format.should_call_runtime_require()
-                  && self.options.polyfill_require_for_esm_format_with_node_platform()
-                {
-                  stmt_info
-                    .referenced_symbols
-                    .push(self.runtime.resolve_symbol("__require").into());
-                  record_meta_pairs.push((*rec_id, ImportRecordMeta::CALL_RUNTIME_REQUIRE));
-                }
-              }
-              return;
-            }
-            let rec_resolved_module = &self.module_table.modules[rec.resolved_module];
+            let rec_resolved_module = &self.module_table[rec.resolved_module];
             if !rec_resolved_module.is_normal()
               || is_external_dynamic_import(&self.module_table, rec, importer_idx)
             {
@@ -86,7 +76,7 @@ impl LinkStage<'_> {
                       // export * from 'external' would be just removed. So it references nothing.
                       rec.namespace_ref.set_name(
                         &mut symbols.lock().unwrap(),
-                        &concat_string!("import_", legitimize_identifier_name(&importee.name)),
+                        &concat_string!("import_", &importee.identifier_name),
                       );
                     } else {
                       // import ... from 'external' or export ... from 'external'
@@ -107,6 +97,7 @@ impl LinkStage<'_> {
               }
               Module::Normal(importee) => {
                 let importee_linking_info = &self.metas[importee.idx];
+
                 match rec.kind {
                   ImportKind::Import => {
                     let is_reexport_all = rec.meta.contains(ImportRecordMeta::IS_EXPORT_STAR);
@@ -154,21 +145,28 @@ impl LinkStage<'_> {
                             .push(self.runtime.resolve_symbol("__reExport").into());
                           stmt_info.referenced_symbols.push(importer.namespace_object_ref.into());
                         } else {
-                          // - import * as bar from 'bar_cjs'
-                          // - import { prop } from 'bar_cjs'
-                          // will be removed in the final bundler. Nothing need to do here.
-                          // stmt_info.side_effect = importee.side_effects.has_side_effects();
+                          stmt_info.side_effect = importee.side_effects.has_side_effects();
 
-                          // `require_bar_cjs`
-                          // stmt_info
-                          //   .referenced_symbols
-                          //   .push(importee_linking_info.wrapper_ref.unwrap().into());
+                          // Turn `import * as bar from 'bar_cjs'` into `var import_bar_cjs = __toESM(require_bar_cjs())`
+                          // Turn `import { prop } from 'bar_cjs'; prop;` into `var import_bar_cjs = __toESM(require_bar_cjs()); import_bar_cjs.prop;`
+                          // Reference to `require_bar_cjs`
+                          stmt_info
+                            .referenced_symbols
+                            .push(importee_linking_info.wrapper_ref.unwrap().into());
+                          stmt_info
+                            .referenced_symbols
+                            .push(self.runtime.resolve_symbol("__toESM").into());
+                          symbols_to_be_declared.push((rec.namespace_ref, stmt_info_idx));
+                          rec.namespace_ref.set_name(
+                            &mut symbols.lock().unwrap(),
+                            &concat_string!("import_", importee.repr_name),
+                          );
                         }
                       }
                       WrapKind::Esm => {
-                        *importer_side_effect = DeterminedSideEffects::Analyzed(true);
-                        stmt_info.side_effect = true;
                         // Turn `import ... from 'bar_esm'` into `init_bar_esm()`
+                        stmt_info.side_effect =
+                          is_reexport_all || importee.side_effects.has_side_effects();
                         // Reference to `init_foo`
                         stmt_info
                           .referenced_symbols
@@ -247,13 +245,18 @@ impl LinkStage<'_> {
             stmt_info.referenced_symbols.push(self.runtime.resolve_symbol("__name").into());
           }
         });
+
+        symbols_to_be_declared.into_iter().for_each(|(symbol_ref, idx)| {
+          stmt_infos.declare_symbol_for_stmt(idx, symbol_ref);
+        });
+
         (importer_idx, record_meta_pairs)
       })
       .collect::<Vec<_>>();
 
     // merge import_record.meta
     for (module_idx, record_meta_pairs) in record_meta_update_pending_pairs_list {
-      let Some(module) = self.module_table.modules[module_idx].as_normal_mut() else {
+      let Some(module) = self.module_table[module_idx].as_normal_mut() else {
         continue;
       };
       for (rec_id, meta) in record_meta_pairs {

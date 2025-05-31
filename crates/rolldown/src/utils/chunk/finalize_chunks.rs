@@ -7,7 +7,9 @@ use rolldown_common::{AssetIdx, HashCharacters, InstantiationKind, StrOrBytes};
 #[cfg(not(target_family = "wasm"))]
 use rolldown_utils::rayon::IndexedParallelIterator;
 use rolldown_utils::{
-  hash_placeholder::{extract_hash_placeholders, replace_placeholder_with_hash},
+  hash_placeholder::{
+    extract_hash_placeholders, hash_placeholder_left_finder, replace_placeholder_with_hash,
+  },
   indexmap::FxIndexSet,
   rayon::{
     IntoParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
@@ -19,33 +21,34 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::{
   chunk_graph::ChunkGraph,
+  stages::link_stage::LinkStageOutput,
   type_alias::{IndexAssets, IndexChunkToAssets, IndexInstantiatedChunks},
 };
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub fn finalize_assets(
   chunk_graph: &mut ChunkGraph,
+  link_output: &LinkStageOutput,
   preliminary_assets: IndexInstantiatedChunks,
   index_chunk_to_assets: &IndexChunkToAssets,
   hash_characters: HashCharacters,
 ) -> IndexAssets {
+  let finder = hash_placeholder_left_finder();
+
   let asset_idx_by_placeholder = preliminary_assets
     .iter_enumerated()
     .filter_map(|(asset_idx, asset)| {
-      asset.preliminary_filename.hash_placeholder().map(|placeholders| {
-        placeholders
-          .iter()
-          .map(|hash_placeholder| (hash_placeholder.into(), asset_idx))
-          .collect::<Vec<_>>()
+      asset.preliminary_filename.hash_placeholder().map(move |placeholders| {
+        placeholders.iter().map(move |hash_placeholder| (hash_placeholder.as_str(), asset_idx))
       })
     })
     .flatten()
-    .collect::<FxHashMap<ArcStr, _>>();
+    .collect::<FxHashMap<_, _>>();
 
   let index_direct_dependencies: IndexVec<AssetIdx, Vec<AssetIdx>> = preliminary_assets
     .par_iter()
     .map(|asset| match &asset.content {
-      StrOrBytes::Str(content) => extract_hash_placeholders(content)
+      StrOrBytes::Str(content) => extract_hash_placeholders(content, &finder)
         .iter()
         .filter_map(|placeholder| asset_idx_by_placeholder.get(placeholder).copied())
         .collect_vec(),
@@ -104,11 +107,8 @@ pub fn finalize_assets(
   let final_hashes_by_placeholder = index_final_hashes
     .iter_enumerated()
     .filter_map(|(idx, (hash, _))| {
-      let asset = &preliminary_assets[idx];
-      asset.preliminary_filename.hash_placeholder().map(|placeholders| {
-        placeholders
-          .iter()
-          .map(|placeholder| (placeholder.clone().into(), &hash[..placeholder.len()]))
+      preliminary_assets[idx].preliminary_filename.hash_placeholder().map(|placeholders| {
+        placeholders.iter().map(|placeholder| (placeholder.clone(), &hash[..placeholder.len()]))
       })
     })
     .flatten()
@@ -123,13 +123,13 @@ pub fn finalize_assets(
       let filename: ArcStr = replace_placeholder_with_hash(
         asset.preliminary_filename.as_str(),
         &final_hashes_by_placeholder,
+        &finder,
       )
       .into();
 
       if let InstantiationKind::Ecma(ecma_meta) = &mut asset.kind {
-        ecma_meta.rendered_chunk.filename = filename.clone();
         let (_, debug_id) = index_final_hashes[asset_idx];
-        ecma_meta.rendered_chunk.debug_id = debug_id;
+        ecma_meta.debug_id = debug_id;
       }
       if let InstantiationKind::Css(css_meta) = &mut asset.kind {
         css_meta.filename = filename.clone();
@@ -140,9 +140,12 @@ pub fn finalize_assets(
       // TODO: PERF: should check if this asset has dependencies/placeholders to be replaced
       match &mut asset.content {
         StrOrBytes::Str(content) => {
-          *content =
-            replace_placeholder_with_hash(mem::take(content), &final_hashes_by_placeholder)
-              .into_owned();
+          *content = replace_placeholder_with_hash(
+            &mem::take(content),
+            &final_hashes_by_placeholder,
+            &finder,
+          )
+          .into_owned();
         }
         StrOrBytes::Bytes(_content) => {}
       }
@@ -158,14 +161,20 @@ pub fn finalize_assets(
   assets.par_iter_mut().for_each(|asset| {
     if let InstantiationKind::Ecma(ecma_meta) = &mut asset.meta {
       let chunk = &chunk_graph.chunk_table[asset.origin_chunk];
-      ecma_meta.rendered_chunk.imports = chunk
+      ecma_meta.imports = chunk
         .cross_chunk_imports
         .iter()
         .flat_map(|importee_idx| &index_chunk_to_assets[*importee_idx])
         .map(|importee_asset_idx| index_asset_to_filename[*importee_asset_idx].clone())
+        .chain(
+          chunk
+            .imports_from_external_modules
+            .iter()
+            .map(|(idx, _)| link_output.module_table[*idx].id().into()),
+        )
         .collect();
 
-      ecma_meta.rendered_chunk.dynamic_imports = chunk
+      ecma_meta.dynamic_imports = chunk
         .cross_chunk_dynamic_imports
         .iter()
         .flat_map(|importee_idx| &index_chunk_to_assets[*importee_idx])

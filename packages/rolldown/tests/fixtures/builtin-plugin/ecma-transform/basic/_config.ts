@@ -1,6 +1,6 @@
-import { transformPlugin } from 'rolldown/experimental'
-import { defineTest } from 'rolldown-tests'
 import { expect } from 'vitest'
+import { defineTest } from 'rolldown-tests'
+import { transformPlugin } from 'rolldown/experimental'
 
 export default defineTest({
   config: {
@@ -9,7 +9,7 @@ export default defineTest({
       transformPlugin(),
       {
         name: 'test',
-        transform(code, id) {
+        transform(code) {
           // after transform there should be no `interface`
           expect(code).not.include('interface')
           return null

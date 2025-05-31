@@ -20,7 +20,6 @@ pub use r#gen::ToSourceString;
 pub struct EcmaAst {
   pub program: ProgramCell,
   pub source_type: SourceType,
-  pub contains_use_strict: bool,
 }
 
 impl EcmaAst {
@@ -46,17 +45,16 @@ impl EcmaAst {
   #[must_use]
   pub fn clone_with_another_arena(&self) -> EcmaAst {
     let program = ProgramCell::new(
-      ProgramCellOwner { source: self.source().clone(), allocator: Allocator::default() },
+      ProgramCellOwner {
+        source: self.source().clone(),
+        allocator: Allocator::with_capacity(self.allocator().used_bytes()),
+      },
       |owner| {
         let program = self.program().clone_in(&owner.allocator);
         ProgramCellDependent { program }
       },
     );
-    EcmaAst {
-      program,
-      source_type: self.source_type,
-      contains_use_strict: self.contains_use_strict,
-    }
+    EcmaAst { program, source_type: self.source_type }
   }
 }
 

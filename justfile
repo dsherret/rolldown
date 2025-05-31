@@ -10,7 +10,7 @@ setup:
     just check-setup-prerequisites
     # Rust related setup
     cargo install cargo-binstall
-    cargo binstall taplo-cli cargo-insta cargo-deny cargo-shear -y
+    cargo binstall cargo-insta cargo-deny cargo-shear typos-cli -y
     # Node.js related setup
     corepack enable
     pnpm install
@@ -43,7 +43,7 @@ roll-repo: lint-repo
 check: check-rust check-node
 
 check-rust:
-    cargo check --workspace
+    cargo ck
 
 check-node:
     pnpm type-check
@@ -52,7 +52,7 @@ update-esbuild-diff *args="":
     pnpm --filter=scripts esbuild-snap-diff {{ args }}
 
 # run tests for both Rust and Node.js
-test: test-rust test-node
+test: test-rust test-node update-generated-code
 
 # run all tests and update snapshot
 test-update:
@@ -61,6 +61,9 @@ test-update:
 
 test-rust:
     cargo test --workspace --exclude rolldown_binding
+
+update-generated-code:
+    cargo run --bin generator
 
 # Supported presets: all, rolldown, rollup
 test-node preset="all" *args="": _build-native-debug
@@ -90,25 +93,22 @@ fmt: fmt-rust fmt-repo
 
 fmt-rust:
     cargo fmt --all -- --emit=files
-    taplo fmt
+    -cargo shear --fix # omit exit status with `-`
 
 fmt-repo:
-    pnpm lint-prettier:fix
-    pnpm lint-toml:fix
+    pnpm run fmt
 
 # Lint the codebase
 lint: lint-rust lint-node lint-repo
 
 lint-rust:
-    cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- --deny warnings
-    cargo shear
 
 lint-node:
     pnpm lint-code
 
 lint-repo:
-    pnpm lint-repo
+    typos
     cargo ls-lint
 
 # Fix formatting and some linting issues
@@ -117,14 +117,13 @@ fix: fix-rust fix-repo
 fix-rust:
     just fmt-rust
     cargo fix --allow-dirty --allow-staged
-    cargo shear --fix
 
 fix-repo:
     pnpm lint-code -- --fix
     just fmt-repo
 
-# Support `just build [native|wasi] [debug|release]`
-build target="native" mode="debug":
+# Support `just build [native|browser] [debug|release]`
+build target="native" mode="debug": build-pluginutils
     pnpm run --filter rolldown build-{{ target }}:{{ mode }}
 
 _build-native-debug:
@@ -133,6 +132,14 @@ _build-native-debug:
 # This command is used to build the js side code only.
 build-js-glue:
     pnpm run --filter rolldown build-js-glue
+
+# This will build the package `@rolldown/browser`.
+build-browser mode="debug":
+    pnpm run --filter "@rolldown/browser" build:{{ mode }}
+
+# This will build the package `@rolldown/pluginutils`.
+build-pluginutils:
+    pnpm run --filter "@rolldown/pluginutils" build
 
 run *args:
     pnpm rolldown {{ args }}
@@ -154,7 +161,7 @@ bump-packages *args:
     node --import @oxc-node/core/register ./scripts/misc/bump-version.js {{ args }}
 
 changelog:
-    pnpm conventional-changelog --preset angular --i CHANGELOG.md --same-file --pkg=./packages/rolldown/package.json
+    pnpm conventional-changelog --preset conventionalcommits --i CHANGELOG.md --same-file --pkg=./packages/rolldown/package.json
 
 check-setup-prerequisites:
     node ./scripts/misc/setup-prerequisites/node.js

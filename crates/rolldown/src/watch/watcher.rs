@@ -1,13 +1,11 @@
+use crate::watch::event::{BundleEvent, WatcherChangeData, WatcherEvent};
 use arcstr::ArcStr;
 use notify::{Config, RecommendedWatcher, Watcher as NotifyWatcher, event::ModifyKind};
-use rolldown_common::{
-  BundleEvent, NotifyOption, WatcherChangeData, WatcherChangeKind, WatcherEvent,
-};
+use rolldown_common::{NotifyOption, WatcherChangeKind};
 use rolldown_error::BuildResult;
 use rolldown_utils::dashmap::FxDashSet;
 use std::{
   ops::Deref,
-  path::Path,
   sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -38,7 +36,6 @@ pub struct WatcherImpl {
   pub emitter: SharedWatcherEmitter,
   tasks: Vec<WatcherTask>,
   notify_watcher: Arc<Mutex<RecommendedWatcher>>,
-  notify_watch_files: Arc<FxDashSet<ArcStr>>,
   running: AtomicBool,
   watch_changes: FxDashSet<WatcherChangeData>,
   tx: Arc<Sender<WatcherChannelMsg>>,
@@ -74,7 +71,7 @@ impl WatcherImpl {
       move |res| {
         if let Err(e) = tx.send(WatcherChannelMsg::NotifyEvent(res)) {
           eprintln!("send watch event error {e:?}");
-        };
+        }
       },
       watch_option,
     )?));
@@ -97,7 +94,6 @@ impl WatcherImpl {
       tasks,
       emitter,
       notify_watcher,
-      notify_watch_files,
       running: AtomicBool::default(),
       watch_changes: FxDashSet::default(),
       rx: Arc::new(Mutex::new(rx)),
@@ -127,7 +123,7 @@ impl WatcherImpl {
 
   #[tracing::instrument(level = "debug", skip_all)]
   pub async fn run(&self, changed_files: &[ArcStr]) -> BuildResult<()> {
-    self.emitter.emit(WatcherEvent::ReStart)?;
+    self.emitter.emit(WatcherEvent::Restart)?;
 
     self.running.store(true, Ordering::Relaxed);
     self.emitter.emit(WatcherEvent::Event(BundleEvent::Start))?;
@@ -153,11 +149,7 @@ impl WatcherImpl {
     self.exec_tx.send(ExecChannelMsg::Close)?;
     // stop watching files
     // TODO the notify watcher should be dropped, because the stop method is private
-    let mut inner = self.notify_watcher.lock().await;
-    for path in self.notify_watch_files.iter() {
-      tracing::debug!(name= "notify close ", path = ?path.as_str());
-      inner.unwatch(Path::new(path.as_str()))?;
-    }
+    let inner = self.notify_watcher.lock().await;
     // The inner mutex should be dropped to avoid deadlock with bundler lock at `Watcher::run`
     std::mem::drop(inner);
     // emit close event

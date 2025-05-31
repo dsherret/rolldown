@@ -77,7 +77,7 @@ pub fn update_outputs(
           update_output_chunk(old_chunk, chunk)?;
         }
         rolldown_common::Output::Asset(_) => {}
-      };
+      }
     }
   }
   for asset in changed.assets {
@@ -105,7 +105,7 @@ pub fn to_js_diagnostic(
 ) -> napi::Either<napi::JsError, BindingError> {
   match diagnostic.downcast_napi_error() {
     Ok(napi_error) => {
-      let e = napi::JsError::from(napi_error.clone());
+      let e = napi::JsError::from(napi_error.try_clone().unwrap_or_else(|e| e));
       napi::Either::A(e)
     }
     Err(error) => napi::Either::B(BindingError {

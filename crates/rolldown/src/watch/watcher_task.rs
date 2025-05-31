@@ -9,15 +9,13 @@ use std::{
 
 use crate::{Bundler, SharedOptions};
 
-use super::emitter::SharedWatcherEmitter;
+use super::{emitter::SharedWatcherEmitter, event::BundleErrorEventData};
+use crate::watch::event::{BundleEndEventData, BundleEvent, WatcherEvent};
 use arcstr::ArcStr;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use rolldown_common::{
-  BundleEndEventData, BundleEvent, OutputsDiagnostics, WatcherChangeKind, WatcherEvent,
-};
+use rolldown_common::{OutputsDiagnostics, WatcherChangeKind};
 use rolldown_error::{BuildDiagnostic, BuildResult, ResultExt};
 use rolldown_utils::{dashmap::FxDashSet, pattern_filter};
-use sugar_path::SugarPath;
 use tokio::sync::Mutex;
 
 pub struct WatcherTask {
@@ -57,23 +55,22 @@ impl WatcherTask {
 
     self.emitter.emit(WatcherEvent::Event(BundleEvent::BundleStart))?;
 
+    bundler.reset_closed();
     bundler.plugin_driver.clear();
-    for file in changed_files {
-      bundler.cache.invalidate(file);
-    }
+
     let result = {
-      let result = bundler.scan().await;
-      // FIXME(hyf0): probably should have a more official API/better way to get watch files
-      self.watch_files(&bundler.plugin_driver.watch_files, &bundler.options).await?;
+      let result = bundler.scan(changed_files.to_owned()).await;
+      let watched_files = Arc::clone(bundler.get_watch_files());
+      self.watch_files(&watched_files, &bundler.options).await?;
       match result {
         Ok(scan_stage_output) => {
           if bundler.options.watch.skip_write {
             Ok(())
           } else {
             // avoid watching scan stage files twice
-            bundler.plugin_driver.watch_files.clear();
+            watched_files.clear();
             let output = bundler.bundle_write(scan_stage_output).await;
-            self.watch_files(&bundler.plugin_driver.watch_files, &bundler.options).await?;
+            self.watch_files(&watched_files, &bundler.options).await?;
             match output {
               Ok(_) => Ok(()),
               Err(errs) => Err(errs),
@@ -95,12 +92,16 @@ impl WatcherTask {
             .to_string(),
           #[allow(clippy::cast_possible_truncation)]
           duration: start_time.elapsed().as_millis() as u32,
+          result: Arc::clone(&self.bundler),
         })))?;
       }
       Err(errs) => {
-        self.emitter.emit(WatcherEvent::Event(BundleEvent::Error(OutputsDiagnostics {
-          diagnostics: errs.into_vec(),
-          cwd: bundler.options.cwd.clone(),
+        self.emitter.emit(WatcherEvent::Event(BundleEvent::Error(BundleErrorEventData {
+          error: OutputsDiagnostics {
+            diagnostics: errs.into_vec(),
+            cwd: bundler.options.cwd.clone(),
+          },
+          result: Arc::clone(&self.bundler),
         })))?;
       }
     }
@@ -122,31 +123,28 @@ impl WatcherTask {
         continue;
       }
       let path = Path::new(file.as_str());
-      if path.exists() {
-        let normalized_path = path.relative(&options.cwd);
-        let normalized_id = normalized_path.to_string_lossy();
-        if pattern_filter::filter(
+      if path.exists()
+        && pattern_filter::filter(
           options.watch.exclude.as_deref(),
           options.watch.include.as_deref(),
           file.as_str(),
-          &normalized_id,
+          options.cwd.to_string_lossy().as_ref(),
         )
         .inner()
-        {
-          self.watch_files.insert(file.clone());
-          // we should skip the file that is already watched, here here some reasons:
-          // - The watching files has a ms level overhead.
-          // - Watching the same files multiple times will cost more overhead.
-          // TODO: tracking https://github.com/notify-rs/notify/issues/653
-          if self.notify_watch_files.contains(file.as_str()) {
-            continue;
-          }
-          let path = Path::new(file.as_str());
-          if path.exists() {
-            tracing::debug!(name= "notify watch ", path = ?path);
-            notify_watcher.watch(path, RecursiveMode::Recursive).map_err_to_unhandleable()?;
-            self.notify_watch_files.insert(file.clone());
-          }
+      {
+        self.watch_files.insert(file.clone());
+        // we should skip the file that is already watched, here here some reasons:
+        // - The watching files has a ms level overhead.
+        // - Watching the same files multiple times will cost more overhead.
+        // TODO: tracking https://github.com/notify-rs/notify/issues/653
+        if self.notify_watch_files.contains(file.as_str()) {
+          continue;
+        }
+        let path = Path::new(file.as_str());
+        if path.exists() {
+          tracing::debug!(name= "notify watch ", path = ?path);
+          notify_watcher.watch(path, RecursiveMode::Recursive).map_err_to_unhandleable()?;
+          self.notify_watch_files.insert(file.clone());
         }
       }
     }
@@ -169,15 +167,26 @@ impl WatcherTask {
     if self.watch_files.contains(path) {
       self.invalidate_flag.store(true, Ordering::Relaxed);
     }
+
+    // #4385 watch linux path at windows, notify will give an `C:/xxx\\main.js` path
+    #[cfg(windows)]
+    {
+      if self.watch_files.contains(path.replace('\\', "/").as_str()) {
+        self.invalidate_flag.store(true, Ordering::Relaxed);
+      }
+    }
   }
 
   #[tracing::instrument(level = "debug", skip(self))]
   pub async fn on_change(&self, path: &str, kind: WatcherChangeKind) {
     let bundler = self.bundler.lock().await;
     let _ = bundler.plugin_driver.watch_change(path, kind).await.map_err(|e| {
-      self.emitter.emit(WatcherEvent::Event(BundleEvent::Error(OutputsDiagnostics {
-        diagnostics: vec![BuildDiagnostic::unhandleable_error(e)],
-        cwd: bundler.options.cwd.clone(),
+      self.emitter.emit(WatcherEvent::Event(BundleEvent::Error(BundleErrorEventData {
+        error: OutputsDiagnostics {
+          diagnostics: vec![BuildDiagnostic::unhandleable_error(e)],
+          cwd: bundler.options.cwd.clone(),
+        },
+        result: Arc::clone(&self.bundler),
       })))
     });
   }

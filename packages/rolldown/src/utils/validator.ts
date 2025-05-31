@@ -1,32 +1,32 @@
-import * as v from 'valibot'
-import { colors } from '../cli/colors'
-import { toJsonSchema } from '@valibot/to-json-schema'
-import type { PreRenderedChunk } from '../binding'
+import { toJsonSchema } from '@valibot/to-json-schema';
+import colors from 'ansis';
+import * as v from 'valibot';
+import type { PreRenderedChunk } from '../binding';
+import type { PreRenderedAsset } from '../options/output-options';
 import type {
   RolldownOutputPluginOption,
   RolldownPluginOption,
-} from '../plugin'
-import type { ObjectSchema } from '../types/schema'
-import type { RenderedChunk } from '../types/rolldown-output'
+} from '../plugin';
 import type {
   SourcemapIgnoreListOption,
   SourcemapPathTransformOption,
-} from '../types/misc'
-import { PreRenderedAsset } from '../options/output-options'
+} from '../types/misc';
+import type { RenderedChunk } from '../types/rolldown-output';
+import type { ObjectSchema } from '../types/schema';
 
-const StringOrRegExpSchema = v.union([v.string(), v.instance(RegExp)])
+const StringOrRegExpSchema = v.union([v.string(), v.instance(RegExp)]);
 
 const LogLevelSchema = v.union([
   v.literal('debug'),
   v.literal('info'),
   v.literal('warn'),
-])
+]);
 
-const LogLevelOptionSchema = v.union([LogLevelSchema, v.literal('silent')])
-const LogLevelWithErrorSchema = v.union([LogLevelSchema, v.literal('error')])
+const LogLevelOptionSchema = v.union([LogLevelSchema, v.literal('silent')]);
+const LogLevelWithErrorSchema = v.union([LogLevelSchema, v.literal('error')]);
 
-const RollupLogSchema = v.any()
-const RollupLogWithStringSchema = v.union([RollupLogSchema, v.string()])
+const RollupLogSchema = v.any();
+const RollupLogWithStringSchema = v.union([RollupLogSchema, v.string()]);
 
 /// --- InputSchema ---
 
@@ -34,7 +34,7 @@ const InputOptionSchema = v.union([
   v.string(),
   v.array(v.string()),
   v.record(v.string(), v.string()),
-])
+]);
 
 const ExternalSchema = v.union([
   StringOrRegExpSchema,
@@ -44,11 +44,12 @@ const ExternalSchema = v.union([
     v.args(v.tuple([v.string(), v.optional(v.string()), v.boolean()])),
     v.returns(v.nullish(v.boolean())),
   ),
-])
+]);
 
 const ModuleTypesSchema = v.record(
   v.string(),
   v.union([
+    v.literal('asset'),
     v.literal('base64'),
     v.literal('binary'),
     v.literal('css'),
@@ -61,20 +62,25 @@ const ModuleTypesSchema = v.record(
     v.literal('ts'),
     v.literal('tsx'),
   ]),
-)
+);
 
 const JsxOptionsSchema = v.strictObject({
+  runtime: v.pipe(
+    v.optional(v.union([
+      v.literal('classic'),
+      v.literal('automatic'),
+    ])),
+    v.description('Which runtime to use'),
+  ),
   development: v.pipe(
     v.optional(v.boolean()),
     v.description('Development specific information'),
   ),
-  factory: v.pipe(
+  throwIfNamespace: v.pipe(
     v.optional(v.string()),
-    v.description('Jsx element transformation'),
-  ),
-  fragment: v.pipe(
-    v.optional(v.string()),
-    v.description('Jsx fragment transformation'),
+    v.description(
+      'Toggles whether to throw an error when a tag name uses an XML namespace',
+    ),
   ),
   importSource: v.pipe(
     v.optional(v.string()),
@@ -82,27 +88,70 @@ const JsxOptionsSchema = v.strictObject({
       'Import the factory of element and fragment if mode is classic',
     ),
   ),
-  jsxImportSource: v.pipe(
+  pragma: v.pipe(
     v.optional(v.string()),
-    v.description(
-      'Import the factory of element and fragment if mode is automatic',
-    ),
+    v.description('Jsx element transformation'),
   ),
-  mode: v.pipe(
+  pragmaFlag: v.pipe(
     v.optional(
-      v.union([
-        v.literal('classic'),
-        v.literal('automatic'),
-        v.literal('preserve'),
-      ]),
+      v.string(),
     ),
-    v.description('Jsx transformation mode'),
+    v.description('Jsx fragment transformation'),
   ),
   refresh: v.pipe(
     v.optional(v.boolean()),
-    v.description('React refresh transformation'),
+    v.description('Enable react fast refresh'),
   ),
-})
+});
+
+const HelperModeSchema = v.union([v.literal('Runtime'), v.literal('External')]);
+
+const DecoratorOptionSchema = v.object({
+  legacy: v.optional(v.boolean()),
+  emitDecoratorMetadata: v.optional(v.boolean()),
+});
+
+const HelpersSchema = v.object({
+  mode: v.optional(HelperModeSchema),
+});
+
+const RewriteImportExtensionsSchema = v.union([
+  v.literal('rewrite'),
+  v.literal('remove'),
+  v.boolean(),
+]);
+const TypescriptSchema = v.object({
+  jsxPragma: v.optional(v.string()),
+  jsxPragmaFrag: v.optional(v.string()),
+  onlyRemoveTypeImports: v.optional(v.boolean()),
+  allowNamespaces: v.optional(v.boolean()),
+  allowDeclareFields: v.optional(v.boolean()),
+  declaration: v.optional(
+    v.object({
+      stripInternal: v.optional(v.boolean()),
+      sourcemap: v.optional(v.boolean()),
+    }),
+  ),
+  rewriteImportExtensions: v.optional(RewriteImportExtensionsSchema),
+});
+const AssumptionsSchema = v.object({
+  ignoreFunctionLength: v.optional(v.boolean()),
+  noDocumentAll: v.optional(v.boolean()),
+  objectRestNoSymbols: v.optional(v.boolean()),
+  pureGetters: v.optional(v.boolean()),
+  setPublicClassFields: v.optional(v.boolean()),
+});
+const TransformOptionsSchema = v.object({
+  assumptions: v.optional(AssumptionsSchema),
+  typescript: v.optional(TypescriptSchema),
+  helpers: v.optional(HelpersSchema),
+  decorators: v.optional(DecoratorOptionSchema),
+  jsx: v.optional(JsxOptionsSchema),
+  target: v.pipe(
+    v.optional(v.union([v.string(), v.array(v.string())])),
+    v.description('The JavaScript target environment'),
+  ),
+});
 
 const WatchOptionsSchema = v.strictObject({
   chokidar: v.optional(
@@ -133,23 +182,82 @@ const WatchOptionsSchema = v.strictObject({
     v.optional(v.number()),
     v.description('Throttle watch rebuilds'),
   ),
-})
+});
 
 const ChecksOptionsSchema = v.strictObject({
   circularDependency: v.pipe(
     v.optional(v.boolean()),
     v.description(
-      'Whether to emit warnings when detecting circular dependencies',
+      'Whether to emit warning when detecting circular dependency',
     ),
   ),
-})
+  eval: v.pipe(
+    v.optional(v.boolean()),
+    v.description(
+      'Whether to emit warning when detecting eval',
+    ),
+  ),
+  missingGlobalName: v.pipe(
+    v.optional(v.boolean()),
+    v.description(
+      'Whether to emit warning when detecting missing global name',
+    ),
+  ),
+  missingNameOptionForIifeExport: v.pipe(
+    v.optional(v.boolean()),
+    v.description(
+      'Whether to emit warning when detecting missing name option for iife export',
+    ),
+  ),
+  mixedExport: v.pipe(
+    v.optional(v.boolean()),
+    v.description(
+      'Whether to emit warning when detecting mixed export',
+    ),
+  ),
+  unresolvedEntry: v.pipe(
+    v.optional(v.boolean()),
+    v.description(
+      'Whether to emit warning when detecting unresolved entry',
+    ),
+  ),
+  unresolvedImport: v.pipe(
+    v.optional(v.boolean()),
+    v.description(
+      'Whether to emit warning when detecting unresolved import',
+    ),
+  ),
+  filenameConflict: v.pipe(
+    v.optional(v.boolean()),
+    v.description(
+      'Whether to emit warning when detecting filename conflict',
+    ),
+  ),
+  commonJsVariableInEsm: v.pipe(
+    v.optional(v.boolean()),
+    v.description(
+      'Whether to emit warning when detecting common js variable in esm',
+    ),
+  ),
+  importIsUndefined: v.pipe(
+    v.optional(v.boolean()),
+    v.description(
+      'Whether to emit warning when detecting import is undefined',
+    ),
+  ),
+  configurationFieldConflict: v.pipe(
+    v.optional(v.boolean()),
+    v.description(
+      'Whether to emit warning when detecting configuration field conflict',
+    ),
+  ),
+});
 
 const MinifyOptionsSchema = v.strictObject({
-  mangle: v.boolean(),
-  compress: v.boolean(),
-  deadCodeElimination: v.boolean(),
-  removeWhitespace: v.boolean(),
-})
+  mangle: v.optional(v.boolean()),
+  compress: v.optional(v.boolean()),
+  removeWhitespace: v.optional(v.boolean()),
+});
 
 const ResolveOptionsSchema = v.strictObject({
   alias: v.optional(
@@ -165,12 +273,17 @@ const ResolveOptionsSchema = v.strictObject({
   modules: v.optional(v.array(v.string())),
   symlinks: v.optional(v.boolean()),
   tsconfigFilename: v.optional(v.string()),
-})
+});
 
+// TODO: moduleSideEffects
 const TreeshakingOptionsSchema = v.union([
   v.boolean(),
-  v.looseObject({ annotations: v.optional(v.boolean()) }),
-])
+  v.looseObject({
+    annotations: v.optional(v.boolean()),
+    manualPureFunctions: v.optional(v.array(v.string())),
+    unknownGlobalSideEffects: v.optional(v.boolean()),
+  }),
+]);
 
 const OnLogSchema = v.pipe(
   v.function(),
@@ -184,7 +297,7 @@ const OnLogSchema = v.pipe(
       ),
     ]),
   ),
-)
+);
 
 const OnwarnSchema = v.pipe(
   v.function(),
@@ -204,7 +317,16 @@ const OnwarnSchema = v.pipe(
       ),
     ]),
   ),
-)
+);
+
+const HmrSchema = v.union([
+  v.boolean(),
+  v.strictObject({
+    port: v.optional(v.number()),
+    host: v.optional(v.string()),
+    implement: v.optional(v.string()),
+  }),
+]);
 
 const InputOptionsSchema = v.strictObject({
   input: v.optional(InputOptionSchema),
@@ -220,7 +342,9 @@ const InputOptionsSchema = v.strictObject({
       v.union([v.literal('browser'), v.literal('neutral'), v.literal('node')]),
     ),
     v.description(
-      `Platform for which the code should be generated (node, ${colors.underline('browser')}, neutral)`,
+      `Platform for which the code should be generated (node, ${
+        colors.underline('browser')
+      }, neutral)`,
     ),
   ),
   shimMissingExports: v.pipe(
@@ -231,7 +355,9 @@ const InputOptionsSchema = v.strictObject({
   logLevel: v.pipe(
     v.optional(LogLevelOptionSchema),
     v.description(
-      `Log level (${colors.dim('silent')}, ${colors.underline(colors.gray('info'))}, debug, ${colors.yellow('warn')})`,
+      `Log level (${colors.dim('silent')}, ${
+        colors.underline(colors.gray('info'))
+      }, debug, ${colors.yellow('warn')})`,
     ),
   ),
   onLog: v.optional(OnLogSchema),
@@ -246,7 +372,8 @@ const InputOptionsSchema = v.strictObject({
       enableComposingJsPlugins: v.optional(v.boolean()),
       resolveNewUrlToAsset: v.optional(v.boolean()),
       strictExecutionOrder: v.optional(v.boolean()),
-      hmr: v.optional(v.boolean()),
+      hmr: v.optional(HmrSchema),
+      attachDebugInfo: v.optional(v.boolean()),
     }),
   ),
   define: v.pipe(
@@ -260,7 +387,18 @@ const InputOptionsSchema = v.strictObject({
     ),
   ),
   profilerNames: v.optional(v.boolean()),
-  jsx: v.optional(v.union([v.boolean(), JsxOptionsSchema])),
+  jsx: v.pipe(
+    v.optional(
+      v.union([
+        v.literal(false),
+        v.literal('react'),
+        v.literal('react-jsx'),
+        v.literal('preserve'),
+      ]),
+    ),
+    v.description('Jsx options preset'),
+  ),
+  transform: v.optional(TransformOptionsSchema),
   watch: v.optional(v.union([WatchOptionsSchema, v.literal(false)])),
   dropLabels: v.pipe(
     v.optional(v.array(v.string())),
@@ -271,9 +409,24 @@ const InputOptionsSchema = v.strictObject({
     v.optional(v.boolean()),
     v.description('Keep function/class name'),
   ),
-})
+  debug: v.pipe(
+    v.optional(v.object({
+      sessionId: v.pipe(
+        v.optional(v.string()),
+        v.description('Used to name the build.'),
+      ),
+    })),
+    v.description(
+      'Enable debug mode. Emit debug information to disk. This might slow down the build process significantly.',
+    ),
+  ),
+});
 
 const InputCliOverrideSchema = v.strictObject({
+  input: v.pipe(
+    v.optional(v.array(v.string())),
+    v.description('Entry file'),
+  ),
   external: v.pipe(
     v.optional(v.array(v.string())),
     v.description(
@@ -288,8 +441,7 @@ const InputCliOverrideSchema = v.strictObject({
     v.optional(v.boolean()),
     v.description('enable treeshaking'),
   ),
-  jsx: v.pipe(v.optional(JsxOptionsSchema), v.description('enable jsx')),
-})
+});
 
 const InputCliOptionsSchema = v.omit(
   v.strictObject({
@@ -297,7 +449,6 @@ const InputCliOptionsSchema = v.omit(
     ...InputCliOverrideSchema.entries,
   }),
   [
-    'input',
     'plugins',
     'onwarn',
     'onLog',
@@ -306,24 +457,9 @@ const InputCliOptionsSchema = v.omit(
     'profilerNames',
     'watch',
   ],
-)
+);
 
 /// --- OutputSchema ---
-
-enum ESTarget {
-  ES6 = 'es6',
-  ES2015 = 'es2015',
-  ES2016 = 'es2016',
-  ES2017 = 'es2017',
-  ES2018 = 'es2018',
-  ES2019 = 'es2019',
-  ES2020 = 'es2020',
-  ES2021 = 'es2021',
-  ES2022 = 'es2022',
-  ES2023 = 'es2023',
-  ES2024 = 'es2024',
-  ESNext = 'esnext',
-}
 
 const ModuleFormatSchema = v.union([
   v.literal('es'),
@@ -333,7 +469,7 @@ const ModuleFormatSchema = v.union([
   v.literal('commonjs'),
   v.literal('iife'),
   v.literal('umd'),
-])
+]);
 
 const AddonFunctionSchema = v.pipe(
   v.function(),
@@ -344,7 +480,7 @@ const AddonFunctionSchema = v.pipe(
       v.pipeAsync(v.promise(), v.awaitAsync(), v.string()),
     ]),
   ),
-)
+);
 
 const ChunkFileNamesSchema = v.union([
   v.string(),
@@ -353,7 +489,7 @@ const ChunkFileNamesSchema = v.union([
     v.args(v.tuple([v.custom<PreRenderedChunk>(() => true)])),
     v.returns(v.string()),
   ),
-])
+]);
 
 const AssetFileNamesSchema = v.union([
   v.string(),
@@ -362,18 +498,18 @@ const AssetFileNamesSchema = v.union([
     v.args(v.tuple([v.custom<PreRenderedAsset>(() => true)])),
     v.returns(v.string()),
   ),
-])
+]);
 
 const SanitizeFileNameSchema = v.union([
   v.boolean(),
   v.pipe(v.function(), v.args(v.tuple([v.string()])), v.returns(v.string())),
-])
+]);
 
 const GlobalsFunctionSchema = v.pipe(
   v.function(),
   v.args(v.tuple([v.string()])),
   v.returns(v.string()),
-)
+);
 
 const AdvancedChunksSchema = v.strictObject({
   minSize: v.optional(v.number()),
@@ -385,7 +521,17 @@ const AdvancedChunksSchema = v.strictObject({
     v.array(
       v.strictObject({
         name: v.string(),
-        test: v.optional(v.union([v.string(), v.instance(RegExp)])),
+        test: v.optional(
+          v.union([
+            v.string(),
+            v.instance(RegExp),
+            v.pipe(
+              v.function(),
+              v.args(v.tuple([v.string()])),
+              v.returns(v.union([v.nullish(v.boolean()), v.void()])),
+            ),
+          ]),
+        ),
         priority: v.optional(v.number()),
         minSize: v.optional(v.number()),
         minShareCount: v.optional(v.number()),
@@ -395,7 +541,7 @@ const AdvancedChunksSchema = v.strictObject({
       }),
     ),
   ),
-})
+});
 
 const OutputOptionsSchema = v.strictObject({
   dir: v.pipe(
@@ -413,7 +559,9 @@ const OutputOptionsSchema = v.strictObject({
       ]),
     ),
     v.description(
-      `Specify a export mode (${colors.underline('auto')}, named, default, none)`,
+      `Specify a export mode (${
+        colors.underline('auto')
+      }, named, default, none)`,
     ),
   ),
   hashCharacters: v.pipe(
@@ -425,16 +573,21 @@ const OutputOptionsSchema = v.strictObject({
   format: v.pipe(
     v.optional(ModuleFormatSchema),
     v.description(
-      `Output format of the generated bundle (supports ${colors.underline('esm')}, cjs, and iife)`,
+      `Output format of the generated bundle (supports ${
+        colors.underline('esm')
+      }, cjs, and iife)`,
     ),
   ),
-
   sourcemap: v.pipe(
     v.optional(
       v.union([v.boolean(), v.literal('inline'), v.literal('hidden')]),
     ),
     v.description(
-      `Generate sourcemap (\`-s inline\` for inline, or ${colors.bold('pass the `-s` on the last argument if you want to generate `.map` file')})`,
+      `Generate sourcemap (\`-s inline\` for inline, or ${
+        colors.bold(
+          'pass the `-s` on the last argument if you want to generate `.map` file',
+        )
+      })`,
     ),
   ),
   sourcemapDebugIds: v.pipe(
@@ -465,7 +618,9 @@ const OutputOptionsSchema = v.strictObject({
   cssChunkFileNames: v.optional(ChunkFileNamesSchema),
   sanitizeFileName: v.optional(SanitizeFileNameSchema),
   minify: v.pipe(
-    v.optional(v.union([v.boolean(), MinifyOptionsSchema])),
+    v.optional(
+      v.union([v.boolean(), v.string('dce-only'), MinifyOptionsSchema]),
+    ),
     v.description('Minify the bundled file'),
   ),
   name: v.pipe(
@@ -488,24 +643,46 @@ const OutputOptionsSchema = v.strictObject({
     v.optional(v.boolean()),
     v.description('Inline dynamic imports'),
   ),
+  manualChunks: v.optional(
+    v.never('manualChunks is not supported. Please use advancedChunks instead'),
+  ),
   advancedChunks: v.optional(AdvancedChunksSchema),
-  comments: v.pipe(
-    v.optional(v.union([v.literal('none'), v.literal('preserve-legal')])),
+  legalComments: v.pipe(
+    v.optional(v.union([v.literal('none'), v.literal('inline')])),
     v.description('Control comments in the output'),
   ),
-  target: v.pipe(
-    v.optional(v.enum(ESTarget)),
-    v.description('The JavaScript target environment'),
-  ),
   plugins: v.optional(v.custom<RolldownOutputPluginOption>(() => true)),
-})
+  polyfillRequire: v.pipe(
+    v.optional(v.boolean()),
+    v.description('Disable require polyfill injection'),
+  ),
+  hoistTransitiveImports: v.optional(
+    v.custom<boolean, () => string>((input) => {
+      if (input) {
+        return false;
+      }
+      return true;
+    }, () => `The 'true' value is not supported`),
+  ),
+  preserveModules: v.pipe(
+    v.optional(v.boolean()),
+    v.description('Preserve module structure'),
+  ),
+  preserveModulesRoot: v.pipe(
+    v.optional(v.string()),
+    v.description('Put preserved modules under this path at root level'),
+  ),
+  virtualDirname: v.optional(v.string()),
+});
 
 const getAddonDescription = (
   placement: 'bottom' | 'top',
   wrapper: 'inside' | 'outside',
 ) => {
-  return `Code to insert the ${colors.bold(placement)} of the bundled file (${colors.bold(wrapper)} the wrapper function)`
-}
+  return `Code to insert the ${colors.bold(placement)} of the bundled file (${
+    colors.bold(wrapper)
+  } the wrapper function)`;
+};
 
 const OutputCliOverrideSchema = v.strictObject({
   // Reject all functions in CLI
@@ -583,15 +760,20 @@ const OutputCliOverrideSchema = v.strictObject({
     v.optional(v.boolean()),
     v.description('Minify the bundled file'),
   ),
-})
+});
 
 const OutputCliOptionsSchema = v.omit(
   v.strictObject({
     ...OutputOptionsSchema.entries,
     ...OutputCliOverrideSchema.entries,
   }),
-  ['sourcemapIgnoreList', 'sourcemapPathTransform', 'plugins'],
-)
+  [
+    'sourcemapIgnoreList',
+    'sourcemapPathTransform',
+    'plugins',
+    'hoistTransitiveImports',
+  ],
+);
 
 /// --- CliSchema ---
 
@@ -603,7 +785,6 @@ const CliOptionsSchema = v.strictObject({
   help: v.pipe(v.optional(v.boolean()), v.description('Show help')),
   version: v.pipe(
     v.optional(v.boolean()),
-
     v.description('Show version number'),
   ),
   watch: v.pipe(
@@ -612,78 +793,84 @@ const CliOptionsSchema = v.strictObject({
   ),
   ...InputCliOptionsSchema.entries,
   ...OutputCliOptionsSchema.entries,
-})
+});
 
 export function validateCliOptions<T>(options: T): [T, string[]?] {
-  let parsed = v.safeParse(CliOptionsSchema, options)
+  let parsed = v.safeParse(CliOptionsSchema, options);
 
   return [
     parsed.output as T,
-    parsed.issues
-      ?.map((issue) => issue.path?.join(', '))
-      .filter((v) => v !== undefined),
-  ]
+    parsed.issues?.map((issue) => {
+      const option = issue.path?.map((pathItem) => pathItem.key).join(' ');
+      return `Invalid value for option ${option}: ${issue.message}`;
+    }),
+  ];
 }
 
-type HelperMsgRecord = Record<string, { ignored?: boolean; msg?: string }>
+type HelperMsgRecord = Record<string, { ignored?: boolean; msg?: string }>;
 
 const inputHelperMsgRecord: HelperMsgRecord = {
   output: { ignored: true }, // Ignore the output key
-}
-const outputHelperMsgRecord: HelperMsgRecord = {}
+};
+const outputHelperMsgRecord: HelperMsgRecord = {};
 
 export function validateOption<T>(key: 'input' | 'output', options: T): void {
-  if (process.env.ROLLDOWN_OPTIONS_VALIDATION === 'loose') return
-
+  if (globalThis.process?.env?.ROLLUP_TEST) return;
   let parsed = v.safeParse(
     key === 'input' ? InputOptionsSchema : OutputOptionsSchema,
     options,
-  )
+  );
 
   if (!parsed.success) {
     const errors = parsed.issues
       .map((issue) => {
-        const issuePaths = issue.path!.map((path) => path.key)
-        let issueMsg = issue.message
+        const issuePaths = issue.path!.map((path) => path.key);
+        let issueMsg = issue.message;
         // For issue in union type, ref https://valibot.dev/guides/unions/
         // - the received is not matched with the all the sub typing
         // - one sub typing is matched, but it is has issue, we need to find the matched sub issue
         if (issue.type === 'union') {
           const subIssue = issue.issues?.find(
             (i) => !(i.type !== issue.received && i.input === issue.input),
-          )
+          );
           if (subIssue) {
             if (subIssue.path) {
-              issuePaths.push(subIssue.path.map((path) => path.key))
+              issuePaths.push(subIssue.path.map((path) => path.key));
             }
-            issueMsg = subIssue.message
+            issueMsg = subIssue.message;
           }
         }
-        const stringPath = issuePaths.join('.')
-        const helper =
-          key === 'input'
-            ? inputHelperMsgRecord[stringPath]
-            : outputHelperMsgRecord[stringPath]
+        const stringPath = issuePaths.join('.');
+        const helper = key === 'input'
+          ? inputHelperMsgRecord[stringPath]
+          : outputHelperMsgRecord[stringPath];
         if (helper && helper.ignored) {
-          return ''
+          return '';
         }
-        return `- For the "${stringPath}". ${issueMsg}. ${helper ? helper.msg : ''}`
+        return `- For the "${stringPath}". ${issueMsg}. ${
+          helper ? helper.msg : ''
+        }`;
       })
-      .filter(Boolean)
+      .filter(Boolean);
     if (errors.length) {
-      throw new Error(`Failed validate ${key} options.\n` + errors.join('\n'))
+      console.warn(`Warning validate ${key} options.\n` + errors.join('\n'));
     }
   }
 }
 
 export function getInputCliKeys(): string[] {
-  return v.keyof(InputCliOptionsSchema).options
+  return v.keyof(InputCliOptionsSchema).options;
 }
 
 export function getOutputCliKeys(): string[] {
-  return v.keyof(OutputCliOptionsSchema).options
+  return v.keyof(OutputCliOptionsSchema).options;
 }
 
 export function getJsonSchema(): ObjectSchema {
-  return toJsonSchema(CliOptionsSchema) as ObjectSchema
+  return toJsonSchema(CliOptionsSchema, {
+    // errorMode: 'ignore' is set to ignore `never` schema
+    // there's no way to suppress the error one-by-one
+    // https://github.com/fabian-hiller/valibot/issues/1062
+    errorMode: 'ignore',
+  }) as ObjectSchema;
 }

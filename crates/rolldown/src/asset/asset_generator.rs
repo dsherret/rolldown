@@ -14,11 +14,11 @@ impl Generator for AssetGenerator {
       .chunk
       .modules
       .iter()
-      .filter_map(|&id| ctx.link_output.module_table.modules[id].as_normal())
+      .filter_map(|&id| ctx.link_output.module_table[id].as_normal())
       .filter(|m| m.asset_view.is_some())
       .collect::<Vec<_>>();
 
-    let mut instantiated_chunks = vec![];
+    let mut instantiated_chunks = Vec::with_capacity(asset_modules.len());
 
     for asset_module in asset_modules {
       let asset_view = asset_module.asset_view.unpack_ref();

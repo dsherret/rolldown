@@ -15,7 +15,11 @@ pub struct UnsupportedFeature {
 
 impl BuildEvent for UnsupportedFeature {
   fn kind(&self) -> crate::event_kind::EventKind {
-    crate::event_kind::EventKind::UnsupportedFeature
+    crate::event_kind::EventKind::UnsupportedFeatureError
+  }
+
+  fn id(&self) -> Option<String> {
+    Some(self.filename.to_string())
   }
 
   fn on_diagnostic(&self, diagnostic: &mut Diagnostic, opts: &DiagnosticOptions) {

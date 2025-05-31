@@ -25,41 +25,35 @@
 use crate::ecmascript::format::utils::namespace::generate_identifier;
 use crate::utils::chunk::namespace_marker::render_namespace_markers;
 use crate::utils::chunk::render_chunk_exports::{
-  get_chunk_export_names, render_wrapped_entry_chunk,
+  get_chunk_export_names_with_ctx, render_wrapped_entry_chunk,
 };
 use crate::{
   ecmascript::ecma_generator::RenderedModuleSources,
   types::generator::GenerateContext,
   utils::chunk::{
-    determine_export_mode::determine_export_mode, determine_use_strict::determine_use_strict,
-    render_chunk_exports::render_chunk_exports,
+    determine_export_mode::determine_export_mode, render_chunk_exports::render_chunk_exports,
   },
 };
-use arcstr::ArcStr;
-use rolldown_common::{ExternalModule, OutputExports};
+use rolldown_common::{AddonRenderContext, ExternalModule, OutputExports};
 use rolldown_error::{BuildDiagnostic, BuildResult};
 use rolldown_sourcemap::SourceJoiner;
 use rolldown_utils::{concat_string, ecmascript::legitimize_identifier_name};
 
 use super::utils::{
-  render_chunk_external_imports, render_factory_parameters,
+  render_chunk_directives, render_chunk_external_imports, render_factory_parameters,
   render_modules_with_peek_runtime_module_at_first,
 };
 
 /// The main function for rendering the IIFE format chunks.
-#[expect(clippy::too_many_arguments)]
 pub async fn render_iife<'code>(
   ctx: &GenerateContext<'_>,
-  hashbang: Option<&'code str>,
-  banner: Option<&'code str>,
-  intro: Option<&'code str>,
-  outro: Option<&'code str>,
-  footer: Option<&'code str>,
+  addon_render_context: AddonRenderContext<'code>,
   module_sources: &'code RenderedModuleSources,
   warnings: &mut Vec<BuildDiagnostic>,
 ) -> BuildResult<SourceJoiner<'code>> {
   let mut source_joiner = SourceJoiner::default();
-
+  let AddonRenderContext { hashbang, banner, intro, outro, footer, directives } =
+    addon_render_context;
   if let Some(hashbang) = hashbang {
     source_joiner.append_source(hashbang);
   }
@@ -68,10 +62,15 @@ pub async fn render_iife<'code>(
     source_joiner.append_source(banner);
   }
 
+  if !directives.is_empty() {
+    source_joiner.append_source(render_chunk_directives(directives.iter()));
+    source_joiner.append_source("");
+  }
+
   // iife wrapper start
 
   // Analyze the export information of the chunk.
-  let export_names = get_chunk_export_names(ctx.chunk, ctx.link_output);
+  let export_names = get_chunk_export_names_with_ctx(ctx);
   let has_exports = !export_names.is_empty();
   let has_default_export = export_names.iter().any(|name| name.as_str() == "default");
 
@@ -125,10 +124,6 @@ pub async fn render_iife<'code>(
     factory_parameters,
     ") {\n"
   ));
-
-  if determine_use_strict(ctx) {
-    source_joiner.append_source("\"use strict\";");
-  }
 
   if let Some(intro) = intro {
     source_joiner.append_source(intro);
@@ -191,16 +186,19 @@ async fn render_iife_factory_arguments(
   };
   let globals = &ctx.options.globals;
   for external in externals {
-    let global = globals.call(external.name.as_str()).await;
+    let global = globals.call(external.id.as_str()).await;
     let target = match &global {
       Some(global_name) => legitimize_identifier_name(global_name).to_string(),
       None => {
-        let target = legitimize_identifier_name(&external.name).to_string();
         warnings.push(
-          BuildDiagnostic::missing_global_name(external.name.clone(), ArcStr::from(&target))
-            .with_severity_warning(),
+          BuildDiagnostic::missing_global_name(
+            external.id.to_string(),
+            external.name.clone(),
+            external.identifier_name.clone(),
+          )
+          .with_severity_warning(),
         );
-        target
+        external.identifier_name.to_string()
       }
     };
     factory_arguments.push(target);

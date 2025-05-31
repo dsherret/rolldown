@@ -21,26 +21,13 @@ console.log(
 ```
 ### rolldown
 ```js
-
 //#region top-level.js
 const n_keep = null;
 const u_keep = void 0;
 const i_keep = 1234567;
 const f_keep = 123.456;
 const s_keep = "";
-console.log(
-	// These are doubled to avoid the "inline const/let into next statement if used once" optimization
-	n_keep,
-	n_keep,
-	u_keep,
-	u_keep,
-	i_keep,
-	i_keep,
-	f_keep,
-	f_keep,
-	s_keep,
-	s_keep
-);
+console.log(n_keep, n_keep, u_keep, u_keep, i_keep, i_keep, f_keep, f_keep, s_keep, s_keep);
 
 //#endregion
 ```
@@ -82,7 +69,6 @@ console.log(
 ```
 ### rolldown
 ```js
-
 //#region nested-block.js
 {
 	const REMOVE_n = null;
@@ -90,19 +76,7 @@ console.log(
 	const REMOVE_i = 1234567;
 	const REMOVE_f = 123.456;
 	const s_keep = "";
-	console.log(
-		// These are doubled to avoid the "inline const/let into next statement if used once" optimization
-		REMOVE_n,
-		REMOVE_n,
-		REMOVE_u,
-		REMOVE_u,
-		REMOVE_i,
-		REMOVE_i,
-		REMOVE_f,
-		REMOVE_f,
-		s_keep,
-		s_keep
-);
+	console.log(REMOVE_n, REMOVE_n, REMOVE_u, REMOVE_u, REMOVE_i, REMOVE_i, REMOVE_f, REMOVE_f, s_keep, s_keep);
 }
 
 //#endregion
@@ -146,7 +120,6 @@ function nested() {
 ```
 ### rolldown
 ```js
-
 //#region nested-function.js
 function nested() {
 	const REMOVE_n = null;
@@ -154,19 +127,7 @@ function nested() {
 	const REMOVE_i = 1234567;
 	const REMOVE_f = 123.456;
 	const s_keep = "";
-	console.log(
-		// These are doubled to avoid the "inline const/let into next statement if used once" optimization
-		REMOVE_n,
-		REMOVE_n,
-		REMOVE_u,
-		REMOVE_u,
-		REMOVE_i,
-		REMOVE_i,
-		REMOVE_f,
-		REMOVE_f,
-		s_keep,
-		s_keep
-);
+	console.log(REMOVE_n, REMOVE_n, REMOVE_u, REMOVE_u, REMOVE_i, REMOVE_i, REMOVE_f, REMOVE_f, s_keep, s_keep);
 }
 assert(nested() !== void 0);
 
@@ -203,7 +164,6 @@ var ns;
 ```
 ### rolldown
 ```js
-
 //#region namespace-export.ts
 let ns;
 (function(_ns) {
@@ -239,7 +199,6 @@ let ns;
 ```
 ### rolldown
 ```js
-
 //#region comment-before.js
 {
 	//! comment
@@ -272,7 +231,6 @@ function nested() {
 ```
 ### rolldown
 ```js
-
 //#region directive-before.js
 function nested() {
 	"directive";
@@ -305,7 +263,6 @@ x = [1, 1];
 ```
 ### rolldown
 ```js
-
 //#region semicolon-before.js
 {
 	const REMOVE = 1;
@@ -337,7 +294,6 @@ x = [1, 1];
 ```
 ### rolldown
 ```js
-
 //#region debugger-before.js
 {
 	debugger;
@@ -368,7 +324,6 @@ x = [1, 1];
 ```
 ### rolldown
 ```js
-
 //#region type-before.ts
 {
 	const REMOVE = 1;
@@ -404,7 +359,6 @@ function nested() {
 ```
 ### rolldown
 ```js
-
 //#region exprs-before.js
 function nested() {
 	const x = [
@@ -453,7 +407,6 @@ function foo() {
 ```
 ### rolldown
 ```js
-
 //#region disabled-tdz.js
 foo();
 const x_keep = 1;
@@ -490,7 +443,6 @@ console.log(
 ```
 ### rolldown
 ```js
-
 //#region backwards-reference-top-level.js
 const x = y;
 const y = 1;
@@ -525,7 +477,6 @@ function foo() {
 ```
 ### rolldown
 ```js
-
 //#region backwards-reference-nested-function.js
 function foo() {
 	const x = y;
@@ -561,7 +512,6 @@ function foo() {
 ```
 ### rolldown
 ```js
-
 //#region issue-3125.js
 function foo() {
 	const f = () => x;

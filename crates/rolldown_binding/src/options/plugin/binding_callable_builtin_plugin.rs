@@ -1,54 +1,31 @@
 use std::sync::Arc;
 
-use napi::{Either, bindgen_prelude::FromNapiValue};
+use napi::Either;
 use napi_derive::napi;
 use rolldown_common::{WatcherChangeKind, side_effects};
 use rolldown_plugin::{
-  CustomField, HookLoadArgs, HookLoadOutput, HookResolveIdArgs, HookResolveIdOutput,
+  CustomField, HookLoadArgs, HookLoadOutput, HookResolveIdArgs, HookResolveIdOutput, Pluginable,
 };
-use rolldown_plugin_vite_resolve::{
-  CallablePluginAsyncTrait, ResolveIdOptionsScan, ViteResolvePlugin,
-};
+use rolldown_plugin_vite_resolve::ResolveIdOptionsScan;
 
 use super::{
-  binding_builtin_plugin::{BindingBuiltinPlugin, BindingViteResolvePluginConfig},
-  types::binding_builtin_plugin_name::BindingBuiltinPluginName,
+  binding_builtin_plugin::BindingBuiltinPlugin,
+  types::binding_resolved_external::BindingResolvedExternal,
 };
-
-impl TryFrom<BindingBuiltinPlugin> for Arc<dyn CallablePluginAsyncTrait> {
-  type Error = napi::Error;
-
-  fn try_from(plugin: BindingBuiltinPlugin) -> Result<Self, Self::Error> {
-    Ok(match plugin.__name {
-      BindingBuiltinPluginName::ViteResolve => {
-        let config = if let Some(options) = plugin.options {
-          BindingViteResolvePluginConfig::from_unknown(options)?
-        } else {
-          return Err(napi::Error::new(
-            napi::Status::InvalidArg,
-            "Missing options for ViteResolvePlugin",
-          ));
-        };
-
-        Arc::new(ViteResolvePlugin::new(config.into()))
-      }
-      _ => return Err(napi::Error::new(napi::Status::InvalidArg, "Non-callable builtin plugin.")),
-    })
-  }
-}
 
 #[napi]
 pub struct BindingCallableBuiltinPlugin {
-  inner: Arc<dyn CallablePluginAsyncTrait>,
+  inner: Arc<dyn Pluginable>,
+  context: rolldown_plugin::PluginContext,
 }
 
 #[napi]
 impl BindingCallableBuiltinPlugin {
   #[napi(constructor)]
   pub fn new(plugin: BindingBuiltinPlugin) -> napi::Result<Self> {
-    let inner: Arc<dyn CallablePluginAsyncTrait> = plugin.try_into()?;
+    let inner: Arc<dyn Pluginable> = plugin.try_into()?;
 
-    Ok(Self { inner })
+    Ok(Self { inner, context: rolldown_plugin::PluginContext::new_napi_context() })
   }
 
   #[napi]
@@ -61,13 +38,16 @@ impl BindingCallableBuiltinPlugin {
     Ok(
       self
         .inner
-        .resolve_id(&HookResolveIdArgs {
-          specifier: &id,
-          importer: importer.as_deref(),
-          is_entry: false,
-          kind: rolldown_common::ImportKind::Import,
-          custom: options.map(Into::into).unwrap_or_default(),
-        })
+        .call_resolve_id(
+          &self.context,
+          &HookResolveIdArgs {
+            specifier: &id,
+            importer: importer.as_deref(),
+            is_entry: false,
+            kind: rolldown_common::ImportKind::Import,
+            custom: options.map(Into::into).unwrap_or_default(),
+          },
+        )
         .await?
         .map(Into::into),
     )
@@ -75,7 +55,7 @@ impl BindingCallableBuiltinPlugin {
 
   #[napi]
   pub async fn load(&self, id: String) -> napi::Result<Option<BindingHookJsLoadOutput>> {
-    Ok(self.inner.load(&HookLoadArgs { id: &id }).await?.map(Into::into))
+    Ok(self.inner.call_load(&self.context, &HookLoadArgs { id: &id }).await?.map(Into::into))
   }
 
   #[napi]
@@ -84,7 +64,10 @@ impl BindingCallableBuiltinPlugin {
     path: String,
     event: BindingJsWatchChangeEvent,
   ) -> napi::Result<()> {
-    self.inner.watch_change(&path, bindingify_watcher_change_kind(event.event)?).await?;
+    self
+      .inner
+      .call_watch_change(&self.context, &path, bindingify_watcher_change_kind(event.event)?)
+      .await?;
     Ok(())
   }
 }
@@ -106,7 +89,8 @@ impl From<BindingHookJsResolveIdOptions> for Arc<CustomField> {
 #[napi(object)]
 pub struct BindingHookJsResolveIdOutput {
   pub id: String,
-  pub external: Option<bool>,
+  #[napi(ts_type = "boolean | 'absolute' | 'relative'")]
+  pub external: Option<BindingResolvedExternal>,
   #[napi(ts_type = "boolean | 'no-treeshake'")]
   pub side_effects: BindingJsSideEffects,
 }
@@ -115,7 +99,7 @@ impl From<HookResolveIdOutput> for BindingHookJsResolveIdOutput {
   fn from(value: HookResolveIdOutput) -> Self {
     Self {
       id: value.id.to_string(),
-      external: value.external,
+      external: value.external.map(Into::into),
       side_effects: get_side_effects_binding(value.side_effects),
     }
   }
@@ -132,7 +116,7 @@ pub struct BindingHookJsLoadOutput {
 impl From<HookLoadOutput> for BindingHookJsLoadOutput {
   fn from(value: HookLoadOutput) -> Self {
     Self {
-      code: value.code,
+      code: value.code.to_string(),
       map: value.map.map(|map| map.to_json_string()),
       side_effects: get_side_effects_binding(value.side_effects),
     }

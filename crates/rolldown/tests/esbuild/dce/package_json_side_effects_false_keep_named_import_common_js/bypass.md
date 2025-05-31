@@ -20,16 +20,15 @@ console.log(import_demo_pkg.foo);
 ### rolldown
 ```js
 
-
 //#region node_modules/demo-pkg/index.js
 var require_demo_pkg = __commonJS({ "node_modules/demo-pkg/index.js"(exports) {
 	exports.foo = 123;
 	console.log("hello");
 } });
-var import_demo_pkg = __toESM(require_demo_pkg());
 
 //#endregion
 //#region src/entry.js
+var import_demo_pkg = __toESM(require_demo_pkg());
 console.log(import_demo_pkg.foo);
 
 //#endregion

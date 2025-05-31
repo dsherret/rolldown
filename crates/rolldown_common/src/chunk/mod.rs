@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
   ChunkIdx, ChunkKind, FilenameTemplate, ModuleIdx, ModuleTable, NamedImport, NormalModule,
-  NormalizedBundlerOptions, RollupPreRenderedChunk, SymbolNameRefToken, SymbolRef,
+  NormalizedBundlerOptions, RollupPreRenderedChunk, SymbolRef,
 };
 pub mod chunk_table;
 pub mod types;
@@ -13,7 +13,10 @@ pub mod types;
 use arcstr::ArcStr;
 use rolldown_rstr::Rstr;
 use rolldown_std_utils::PathExt;
-use rolldown_utils::{BitSet, hash_placeholder::HashPlaceholderGenerator, indexmap::FxIndexMap};
+use rolldown_utils::{
+  BitSet, dashmap::FxDashMap, hash_placeholder::HashPlaceholderGenerator, indexmap::FxIndexMap,
+  make_unique_name::make_unique_name,
+};
 use rustc_hash::FxHashMap;
 use sugar_path::SugarPath;
 
@@ -39,7 +42,6 @@ pub struct Chunk {
   pub asset_preliminary_filenames: FxIndexMap<ModuleIdx, PreliminaryFilename>,
   pub asset_absolute_preliminary_filenames: FxIndexMap<ModuleIdx, String>,
   pub canonical_names: FxHashMap<SymbolRef, Rstr>,
-  pub canonical_name_by_token: FxHashMap<SymbolNameRefToken, Rstr>,
   // Sorted by Module#stable_id of modules in the chunk
   pub cross_chunk_imports: Vec<ChunkIdx>,
   pub cross_chunk_dynamic_imports: Vec<ChunkIdx>,
@@ -50,10 +52,12 @@ pub struct Chunk {
   pub imports_from_external_modules: Vec<(ModuleIdx, Vec<NamedImport>)>,
   // meaningless if the chunk is an entrypoint
   pub exports_to_other_chunks: FxHashMap<SymbolRef, Rstr>,
-  pub is_alive: bool,
+  pub input_base: ArcStr,
+  pub create_reasons: Vec<String>,
 }
 
 impl Chunk {
+  #[allow(clippy::too_many_arguments)]
   pub fn new(
     name: Option<ArcStr>,
     reference_id: Option<ArcStr>,
@@ -61,7 +65,7 @@ impl Chunk {
     bits: BitSet,
     modules: Vec<ModuleIdx>,
     kind: ChunkKind,
-    is_alive: bool,
+    input_base: ArcStr,
   ) -> Self {
     Self {
       exec_order: u32::MAX,
@@ -71,7 +75,7 @@ impl Chunk {
       reference_id,
       bits,
       kind,
-      is_alive,
+      input_base,
       ..Self::default()
     }
   }
@@ -81,7 +85,7 @@ impl Chunk {
     if self.modules.len() == 1 && self.modules[0] == runtime_id {
       return false;
     }
-    // TODO: Wether a chunk has side effect is determined by wether it's module has side effect
+    // TODO: Whether a chunk has side effect is determined by whether it's module has side effect
     // Now we just return `true`
     true
   }
@@ -111,7 +115,9 @@ impl Chunk {
     options: &NormalizedBundlerOptions,
     rollup_pre_rendered_chunk: &RollupPreRenderedChunk,
   ) -> anyhow::Result<FilenameTemplate> {
+    // https://github.com/rollup/rollup/blob/061a0387c8654222620f602471d66afd3c582048/src/Chunk.ts?plain=1#L526-L529
     let ret = if matches!(self.kind, ChunkKind::EntryPoint { is_user_defined, .. } if is_user_defined)
+      || options.preserve_modules
     {
       options.entry_filenames.call(rollup_pre_rendered_chunk).await?
     } else {
@@ -142,7 +148,7 @@ impl Chunk {
     rollup_pre_rendered_chunk: &RollupPreRenderedChunk,
     chunk_name: &ArcStr,
     hash_placeholder_generator: &mut HashPlaceholderGenerator,
-    make_unique_name: &mut impl FnMut(&ArcStr) -> ArcStr,
+    used_name_counts: &FxDashMap<ArcStr, u32>,
   ) -> anyhow::Result<PreliminaryFilename> {
     if let Some(file) = &options.file {
       let basename = PathBuf::from(file)
@@ -150,22 +156,14 @@ impl Chunk {
         .expect("The file should have basename")
         .to_string_lossy()
         .to_string();
-      return Ok(PreliminaryFilename::new(basename, None));
+      return Ok(PreliminaryFilename::new(basename.into(), None));
     }
     if let Some(file_name) = &self.file_name {
-      return Ok(PreliminaryFilename::new(file_name.to_string(), None));
+      return Ok(PreliminaryFilename::new(file_name.clone(), None));
     }
 
     let filename_template = self.filename_template(options, rollup_pre_rendered_chunk).await?;
     let has_hash_pattern = filename_template.has_hash_pattern();
-
-    let name = if has_hash_pattern {
-      make_unique_name(chunk_name);
-      Cow::Borrowed(chunk_name)
-    } else {
-      let unique = make_unique_name(chunk_name);
-      Cow::Owned(unique)
-    };
 
     let mut hash_placeholder = has_hash_pattern.then_some(vec![]);
     let hash_replacer = has_hash_pattern.then_some({
@@ -177,10 +175,41 @@ impl Chunk {
         hash
       }
     });
+    let chunk_name = if options.preserve_modules {
+      self.get_preserve_modules_chunk_name(options, chunk_name.as_str())
+    } else {
+      Cow::Borrowed(chunk_name.as_str())
+    };
 
-    let filename = filename_template.render(Some(&name), None, hash_replacer);
+    let filename = filename_template.render(Some(chunk_name.as_ref()), None, hash_replacer).into();
 
-    Ok(PreliminaryFilename::new(filename, hash_placeholder))
+    let name = make_unique_name(&filename, used_name_counts);
+
+    Ok(PreliminaryFilename::new(name, hash_placeholder))
+  }
+
+  pub fn get_preserve_modules_chunk_name(
+    &self,
+    options: &NormalizedBundlerOptions,
+    chunk_name: &str,
+  ) -> Cow<str> {
+    let p = PathBuf::from(chunk_name);
+    if p.is_absolute() {
+      if let Some(ref preserve_modules_root) = options.preserve_modules_root {
+        if chunk_name.starts_with(preserve_modules_root) {
+          return Cow::Owned(
+            chunk_name[preserve_modules_root.len()..]
+              .trim_start_matches('/')
+              .trim_start_matches('\\')
+              .to_string(),
+          );
+        }
+      }
+      let p = p.relative(self.input_base.as_str());
+      Cow::Owned(p.to_slash_lossy().to_string())
+    } else {
+      Cow::Owned(PathBuf::from(&options.virtual_dirname).join(p).to_string_lossy().to_string())
+    }
   }
 
   pub async fn generate_css_preliminary_filename(
@@ -189,24 +218,19 @@ impl Chunk {
     rollup_pre_rendered_chunk: &RollupPreRenderedChunk,
     chunk_name: &ArcStr,
     hash_placeholder_generator: &mut HashPlaceholderGenerator,
-    make_unique_name: &mut impl FnMut(&ArcStr) -> ArcStr,
+    used_name_counts: &FxDashMap<ArcStr, u32>,
   ) -> anyhow::Result<PreliminaryFilename> {
     if let Some(file) = &options.file {
       let mut file = PathBuf::from(file);
       file.set_extension("css");
-      return Ok(PreliminaryFilename::new(file.into_os_string().into_string().unwrap(), None));
+      return Ok(PreliminaryFilename::new(
+        file.into_os_string().into_string().unwrap().into(),
+        None,
+      ));
     }
 
     let filename_template = self.css_filename_template(options, rollup_pre_rendered_chunk).await?;
     let has_hash_pattern = filename_template.has_hash_pattern();
-
-    let name = if has_hash_pattern {
-      make_unique_name(chunk_name);
-      Cow::Borrowed(chunk_name)
-    } else {
-      let unique = make_unique_name(chunk_name);
-      Cow::Owned(unique)
-    };
 
     let mut hash_placeholder = has_hash_pattern.then_some(vec![]);
     let hash_replacer = has_hash_pattern.then_some({
@@ -219,9 +243,11 @@ impl Chunk {
       }
     });
 
-    let filename = filename_template.render(Some(&name), None, hash_replacer);
+    let filename = filename_template.render(Some(chunk_name), None, hash_replacer).into();
 
-    Ok(PreliminaryFilename::new(filename, hash_placeholder))
+    let name = make_unique_name(&filename, used_name_counts);
+
+    Ok(PreliminaryFilename::new(name, hash_placeholder))
   }
 
   pub fn user_defined_entry_module_idx(&self) -> Option<ModuleIdx> {
@@ -235,7 +261,7 @@ impl Chunk {
     &self,
     module_table: &'module ModuleTable,
   ) -> Option<&'module NormalModule> {
-    self.user_defined_entry_module_idx().and_then(|idx| module_table.modules[idx].as_normal())
+    self.user_defined_entry_module_idx().and_then(|idx| module_table[idx].as_normal())
   }
 
   pub fn entry_module_idx(&self) -> Option<ModuleIdx> {
@@ -249,6 +275,6 @@ impl Chunk {
     &self,
     module_table: &'module ModuleTable,
   ) -> Option<&'module NormalModule> {
-    self.entry_module_idx().and_then(|idx| module_table.modules[idx].as_normal())
+    self.entry_module_idx().and_then(|idx| module_table[idx].as_normal())
   }
 }

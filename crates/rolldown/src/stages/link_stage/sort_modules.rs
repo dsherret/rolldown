@@ -1,7 +1,7 @@
 use std::iter;
 
-use rolldown_common::{Module, ModuleIdx};
-use rolldown_error::BuildDiagnostic;
+use rolldown_common::{ImportRecordMeta, Module, ModuleIdx};
+use rolldown_error::{BuildDiagnostic, EventKindSwitcher};
 use rolldown_utils::rustc_hash::FxHashSetExt;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -52,7 +52,7 @@ impl LinkStage<'_> {
       match status {
         Status::ToBeExecuted(id) => {
           if executed_ids.contains(&id) {
-            if self.options.checks.circular_dependency.unwrap_or(false) {
+            if self.options.checks.contains(EventKindSwitcher::CircularDependency) {
               // Try to check if there is a circular dependency
               if let Some(index) = stack_indexes_of_executing_id.get(&id).copied() {
                 // Executing
@@ -78,11 +78,15 @@ impl LinkStage<'_> {
             );
             stack_indexes_of_executing_id.insert(id, execution_stack.len() - 1);
 
+            // top level await module should be sorted.
             execution_stack.extend(
-              self.module_table.modules[id]
+              self.module_table[id]
                 .import_records()
                 .iter()
-                .filter(|rec| rec.kind.is_static() && !rec.is_dummy())
+                .filter(|rec| {
+                  rec.kind.is_static()
+                    || rec.meta.contains(ImportRecordMeta::IS_TOP_LEVEL_AWAIT_DYNAMIC_IMPORT)
+                })
                 .map(|rec| rec.resolved_module)
                 .rev()
                 .map(Status::ToBeExecuted),
@@ -90,7 +94,7 @@ impl LinkStage<'_> {
           }
         }
         Status::WaitForExit(id) => {
-          match &mut self.module_table.modules[id] {
+          match &mut self.module_table[id] {
             Module::Normal(module) => {
               debug_assert!(module.exec_order == u32::MAX);
               module.exec_order = next_exec_order;
@@ -112,9 +116,7 @@ impl LinkStage<'_> {
       for cycle in circular_dependencies {
         let paths = cycle
           .iter()
-          .filter_map(|id| {
-            self.module_table.modules[*id].as_normal().map(|module| module.id.to_string())
-          })
+          .filter_map(|id| self.module_table[*id].as_normal().map(|module| module.id.to_string()))
           .collect::<Vec<_>>();
         self.warnings.push(BuildDiagnostic::circular_dependency(paths).with_severity_warning());
       }

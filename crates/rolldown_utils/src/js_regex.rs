@@ -11,6 +11,14 @@ pub enum HybridRegex {
   Ecma(regress::Regex),
 }
 
+// Please only used for testing
+impl From<&str> for HybridRegex {
+  fn from(pattern: &str) -> Self {
+    HybridRegex::new(pattern).unwrap_or_else(|err| {
+      panic!("failed to create HybridRegex from {pattern}, error details: {err}",)
+    })
+  }
+}
 impl HybridRegex {
   pub fn new(pattern: &str) -> anyhow::Result<Self> {
     match regex::Regex::new(pattern).map(HybridRegex::Optimize) {
@@ -38,24 +46,24 @@ impl HybridRegex {
     }
   }
 
-  pub fn replace_all(&self, haystack: &str, replacement: &str) -> String {
+  pub fn replace_all<'a>(&self, haystack: &'a str, replacement: &str) -> Cow<'a, str> {
     match self {
-      HybridRegex::Optimize(r) => r.replace_all(haystack, replacement).to_string(),
-      HybridRegex::Ecma(reg) => regress_regexp_replace_all(reg, haystack, replacement).to_string(),
+      HybridRegex::Optimize(r) => r.replace_all(haystack, replacement),
+      HybridRegex::Ecma(reg) => regress_regexp_replace_all(reg, haystack, replacement),
     }
   }
 }
 
-fn regress_regexp_replace_all<'a>(
+fn regress_regexp_replace_all<'h>(
   reg: &regress::Regex,
-  haystack: &'a str,
+  haystack: &'h str,
   replacement: &str,
-) -> Cow<'a, str> {
+) -> Cow<'h, str> {
   let iter = reg.find_iter(haystack);
   let mut iter = iter.peekable();
   if iter.peek().is_none() {
     return Cow::Borrowed(haystack);
-  };
+  }
 
   let mut ret = String::with_capacity(haystack.len());
   let mut last = 0;

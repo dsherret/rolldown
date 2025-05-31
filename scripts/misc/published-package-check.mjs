@@ -1,9 +1,15 @@
-import { findWorkspacePackagesNoCheck } from "@pnpm/find-workspace-packages";
-import * as path from "node:path";
-import * as fs from "node:fs";
-import micromatch from "micromatch";
+import { findWorkspacePackagesNoCheck } from '@pnpm/find-workspace-packages';
+import micromatch from 'micromatch';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
-const packagesNeedToPublish = ["packages/rolldown", "packages/rolldown/npm/*"];
+const packagesNeedToPublish = [
+  'packages/rolldown',
+  'packages/rolldown/npm/*',
+  'packages/browser',
+  'packages/debug',
+  'packages/pluginutils',
+];
 
 const root = process.cwd();
 const workspaces = await findWorkspacePackagesNoCheck(root);
@@ -16,8 +22,8 @@ workspaces.forEach((item) => {
     return;
   }
 
-  let packageJsonPath = path.join(absolutePath, "package.json");
-  let json = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+  let packageJsonPath = path.join(absolutePath, 'package.json');
+  let json = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
   if (json.private) {
     return;
   }

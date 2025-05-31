@@ -20,7 +20,11 @@ pub struct UnloadableDependency {
 
 impl BuildEvent for UnloadableDependency {
   fn kind(&self) -> crate::event_kind::EventKind {
-    crate::event_kind::EventKind::UnloadableDependency
+    crate::event_kind::EventKind::UnloadableDependencyError
+  }
+
+  fn id(&self) -> Option<String> {
+    self.context.as_ref().map(|context| context.importer_id.to_string())
   }
 
   fn message(&self, _opts: &DiagnosticOptions) -> String {

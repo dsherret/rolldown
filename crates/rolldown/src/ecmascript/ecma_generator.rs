@@ -7,8 +7,8 @@ use crate::{
 
 use anyhow::Result;
 use rolldown_common::{
-  EcmaAssetMeta, InstantiatedChunk, InstantiationKind, ModuleId, ModuleIdx, OutputFormat,
-  RenderedModule,
+  AddonRenderContext, EcmaAssetMeta, InstantiatedChunk, InstantiationKind, ModuleId, ModuleIdx,
+  OutputFormat, RenderedModule,
 };
 use rolldown_error::BuildResult;
 use rolldown_plugin::HookAddonArgs;
@@ -17,7 +17,6 @@ use rolldown_sourcemap::Source;
 use rolldown_utils::rayon::IndexedParallelIterator;
 use rolldown_utils::rayon::{IntoParallelRefIterator, ParallelIterator};
 use rustc_hash::FxHashMap;
-use sugar_path::SugarPath;
 
 use super::format::{
   app::render_app, cjs::render_cjs, esm::render_esm, iife::render_iife, umd::render_umd,
@@ -57,7 +56,7 @@ impl Generator for EcmaGenerator {
       .copied()
       .zip(module_id_to_codegen_ret)
       .filter_map(|(id, codegen_ret)| {
-        ctx.link_output.module_table.modules[id]
+        ctx.link_output.module_table[id]
           .as_normal()
           .map(|m| (m, codegen_ret.expect("should have codegen_ret")))
       })
@@ -91,129 +90,102 @@ impl Generator for EcmaGenerator {
       );
     });
 
-    let rendered_chunk = generate_rendered_chunk(
-      ctx.chunk,
-      rendered_modules,
-      ctx.chunk.pre_rendered_chunk.as_ref().expect("Should have pre-rendered chunk"),
-      ctx.chunk_graph,
+    let rendered_chunk = Arc::new(generate_rendered_chunk(ctx, rendered_modules));
+
+    let hashbang = ctx.chunk.user_defined_entry_module(&ctx.link_output.module_table).and_then(
+      |normal_module| {
+        normal_module
+          .ecma_view
+          .hashbang_range
+          .map(|range| &normal_module.source[range.start as usize..range.end as usize])
+      },
     );
-    let hashbang = match ctx.chunk.user_defined_entry_module(&ctx.link_output.module_table) {
-      Some(normal_module) => normal_module
-        .ecma_view
-        .hashbang_range
-        .map(|range| &normal_module.source[range.start as usize..range.end as usize]),
-      None => None,
-    };
+
+    let directives: Vec<_> = ctx
+      .chunk
+      .user_defined_entry_module(&ctx.link_output.module_table)
+      .map(|normal_module| {
+        normal_module
+          .ecma_view
+          .directive_range
+          .iter()
+          .map(|range| &normal_module.source[range.start as usize..range.end as usize])
+          .collect::<_>()
+      })
+      .unwrap_or_default();
 
     let banner = {
       let injection = match ctx.options.banner.as_ref() {
-        Some(hook) => hook.call(&rendered_chunk).await?,
+        Some(hook) => hook.call(Arc::clone(&rendered_chunk)).await?,
         None => None,
       };
       ctx
         .plugin_driver
-        .banner(HookAddonArgs { chunk: &rendered_chunk }, injection.unwrap_or_default())
+        .banner(HookAddonArgs { chunk: Arc::clone(&rendered_chunk) }, injection.unwrap_or_default())
         .await?
     };
 
     let intro = {
       let injection = match ctx.options.intro.as_ref() {
-        Some(hook) => hook.call(&rendered_chunk).await?,
+        Some(hook) => hook.call(Arc::clone(&rendered_chunk)).await?,
         None => None,
       };
       ctx
         .plugin_driver
-        .intro(HookAddonArgs { chunk: &rendered_chunk }, injection.unwrap_or_default())
+        .intro(HookAddonArgs { chunk: Arc::clone(&rendered_chunk) }, injection.unwrap_or_default())
         .await?
     };
 
     let outro = {
       let injection = match ctx.options.outro.as_ref() {
-        Some(hook) => hook.call(&rendered_chunk).await?,
+        Some(hook) => hook.call(Arc::clone(&rendered_chunk)).await?,
         None => None,
       };
       ctx
         .plugin_driver
-        .outro(HookAddonArgs { chunk: &rendered_chunk }, injection.unwrap_or_default())
+        .outro(HookAddonArgs { chunk: Arc::clone(&rendered_chunk) }, injection.unwrap_or_default())
         .await?
     };
 
     let footer = {
       let injection = match ctx.options.footer.as_ref() {
-        Some(hook) => hook.call(&rendered_chunk).await?,
+        Some(hook) => hook.call(Arc::clone(&rendered_chunk)).await?,
         None => None,
       };
       ctx
         .plugin_driver
-        .footer(HookAddonArgs { chunk: &rendered_chunk }, injection.unwrap_or_default())
+        .footer(HookAddonArgs { chunk: Arc::clone(&rendered_chunk) }, injection.unwrap_or_default())
         .await?
     };
 
     let mut warnings = vec![];
 
-    let source_joiner = match ctx.options.format {
-      OutputFormat::Esm => render_esm(
-        ctx,
-        hashbang,
-        banner.as_deref(),
-        intro.as_deref(),
-        outro.as_deref(),
-        footer.as_deref(),
-        &rendered_module_sources,
-      ),
+    let addon_render_context = AddonRenderContext {
+      hashbang,
+      banner: banner.as_deref(),
+      intro: intro.as_deref(),
+      outro: outro.as_deref(),
+      footer: footer.as_deref(),
+      directives: &directives,
+    };
+    let mut source_joiner = match ctx.options.format {
+      OutputFormat::Esm => render_esm(ctx, addon_render_context, &rendered_module_sources),
       OutputFormat::Cjs => {
-        match render_cjs(
-          ctx,
-          hashbang,
-          banner.as_deref(),
-          intro.as_deref(),
-          outro.as_deref(),
-          footer.as_deref(),
-          &rendered_module_sources,
-          &mut warnings,
-        ) {
+        match render_cjs(ctx, addon_render_context, &rendered_module_sources, &mut warnings) {
           Ok(source_joiner) => source_joiner,
           Err(errors) => return Ok(Err(errors)),
         }
       }
-      OutputFormat::App => render_app(
-        ctx,
-        hashbang,
-        banner.as_deref(),
-        intro.as_deref(),
-        outro.as_deref(),
-        footer.as_deref(),
-        &rendered_module_sources,
-      ),
+      OutputFormat::App => render_app(ctx, addon_render_context, &rendered_module_sources),
       OutputFormat::Iife => {
-        match render_iife(
-          ctx,
-          hashbang,
-          banner.as_deref(),
-          intro.as_deref(),
-          outro.as_deref(),
-          footer.as_deref(),
-          &rendered_module_sources,
-          &mut warnings,
-        )
-        .await
+        match render_iife(ctx, addon_render_context, &rendered_module_sources, &mut warnings).await
         {
           Ok(source_joiner) => source_joiner,
           Err(errors) => return Ok(Err(errors)),
         }
       }
       OutputFormat::Umd => {
-        match render_umd(
-          ctx,
-          banner.as_deref(),
-          intro.as_deref(),
-          outro.as_deref(),
-          footer.as_deref(),
-          &rendered_module_sources,
-          &mut warnings,
-        )
-        .await
-        {
+        match render_umd(ctx, addon_render_context, &rendered_module_sources, &mut warnings).await {
           Ok(source_joiner) => source_joiner,
           Err(errors) => return Ok(Err(errors)),
         }
@@ -222,7 +194,13 @@ impl Generator for EcmaGenerator {
 
     ctx.warnings.extend(warnings);
 
-    let (content, mut map) = source_joiner.join();
+    if ctx.options.experimental.is_attach_debug_info_enabled()
+      && !ctx.chunk.create_reasons.is_empty()
+    {
+      source_joiner.prepend_source(format!("//! {}", ctx.chunk.create_reasons.join("\n//! ")));
+    }
+
+    let (content, map) = source_joiner.join();
 
     // Here file path is generated by chunk file name template, it maybe including path segments.
     // So here need to read it's parent directory as file_dir.
@@ -236,20 +214,17 @@ impl Generator for EcmaGenerator {
     );
     let file_dir = file_path.parent().expect("chunk file name should have a parent");
 
-    if let Some(map) = map.as_mut() {
-      let paths =
-        map.get_sources().map(|source| source.as_path().relative(file_dir)).collect::<Vec<_>>();
-      // Here not normalize the windows path, the rollup `sourcemap_path_transform` ctx.options need to original path.
-      let sources = paths.iter().map(|x| x.to_string_lossy()).collect::<Vec<_>>();
-      map.set_sources(sources.iter().map(std::convert::AsRef::as_ref).collect::<Vec<_>>());
-    }
-
     Ok(Ok(GenerateOutput {
       chunks: vec![InstantiatedChunk {
         origin_chunk: ctx.chunk_idx,
         content: content.into(),
         map,
-        kind: InstantiationKind::from(EcmaAssetMeta { rendered_chunk }),
+        kind: InstantiationKind::from(EcmaAssetMeta {
+          rendered_chunk,
+          debug_id: 0,
+          imports: vec![],
+          dynamic_imports: vec![],
+        }),
         augment_chunk_hash: None,
         file_dir: file_dir.to_path_buf(),
         preliminary_filename: ctx

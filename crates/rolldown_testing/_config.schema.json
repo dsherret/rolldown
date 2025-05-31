@@ -37,6 +37,11 @@
       "default": true,
       "type": "boolean"
     },
+    "skipWindows": {
+      "description": "Sometimes, it is cumbersome to handle some windows-specific path issue in tests. Usually it is related tests of `preserve_modules`.We can't just replace all `\\\\` into '/', in path, because the Windows format path will also affect the hash, which leads `filename_with_hash.rs` tests failed.",
+      "default": false,
+      "type": "boolean"
+    },
     "snapshotBytes": {
       "description": "If `true`, bytes source will be snapshot.",
       "default": false,
@@ -71,6 +76,12 @@
           "items": {
             "$ref": "#/definitions/MatchGroup"
           }
+        },
+        "includeDependenciesRecursively": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "maxModuleSize": {
           "type": [
@@ -152,16 +163,6 @@
             "null"
           ]
         },
-        "comments": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/Comments"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "cssChunkFilenames": {
           "type": [
             "string",
@@ -178,6 +179,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "debug": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DebugOptions"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "define": {
@@ -332,19 +343,40 @@
             "null"
           ]
         },
-        "jsx": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
         "keepNames": {
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "legalComments": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LegalComments"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logLevel": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LogLevel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "makeAbsoluteExternalsRelative": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MakeAbsoluteExternalsRelative"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "minify": {
@@ -395,6 +427,28 @@
             "null"
           ]
         },
+        "preserveEntrySignatures": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PreserveEntrySignatures"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preserveModules": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "preserveModulesRoot": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "profilerNames": {
           "type": [
             "boolean",
@@ -439,18 +493,21 @@
             "null"
           ]
         },
-        "target": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ESTarget"
-            },
-            {
-              "type": "null"
-            }
-          ]
+        "transform": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
         },
         "treeshake": {
           "$ref": "#/definitions/TreeshakeOptions"
+        },
+        "virtualDirname": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "watch": {
           "anyOf": [
@@ -473,38 +530,79 @@
             "boolean",
             "null"
           ]
+        },
+        "commonJsVariableInEsm": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "configurationFieldConflict": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "eval": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "filenameConflict": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "importIsUndefined": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "missingGlobalName": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "missingNameOptionForIifeExport": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mixedExport": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "unresolvedEntry": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "unresolvedImport": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
     },
-    "Comments": {
-      "oneOf": [
-        {
-          "description": "Don't preserve any comment",
-          "type": "string",
-          "enum": [
-            "none"
-          ]
-        },
-        {
-          "description": "Keep comments as much as possible",
-          "type": "string",
-          "enum": [
-            "preserve"
-          ]
-        },
-        {
-          "description": "Keep legal comments only",
-          "type": "string",
-          "enum": [
-            "preserve-legal"
-          ]
-        }
-      ]
-    },
     "ConfigVariant": {
       "type": "object",
       "properties": {
+        "entryFilenames": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "exports": {
           "anyOf": [
             {
@@ -546,22 +644,17 @@
       },
       "additionalProperties": false
     },
-    "ESTarget": {
-      "type": "string",
-      "enum": [
-        "es5",
-        "es2015",
-        "es2016",
-        "es2017",
-        "es2018",
-        "es2019",
-        "es2020",
-        "es2021",
-        "es2022",
-        "es2023",
-        "es2024",
-        "esNext"
-      ]
+    "DebugOptions": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "EsModuleFlag": {
       "description": "This configuration determines how the bundler should handle the synthetic `__esModule` property in the CJS and IIFE format. It is rollup-capable, and the rollup default is `IfDefaultProp`. You may find rollup explanation [here](https://rollupjs.org/configuration-options/#output-esmodule).\n\n> Whether to add a `__esModule: true` property when generating exports for non-ES formats. > This property signifies that the exported value is the namespace of an ES module and that the default > export of this module corresponds to the `.default` property of the exported object. > > *From rollupjs.org*",
@@ -592,6 +685,12 @@
     "ExperimentalOptions": {
       "type": "object",
       "properties": {
+        "attachDebugInfo": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "disableLiveBindings": {
           "type": [
             "boolean",
@@ -599,9 +698,13 @@
           ]
         },
         "hmr": {
-          "type": [
-            "boolean",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HmrOptions"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "incrementalBuild": {
@@ -638,6 +741,35 @@
         "base36",
         "hex"
       ]
+    },
+    "HmrOptions": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "description": "IP addresses that `DevRuntime` will connect to using WebSocket.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "implement": {
+          "description": "Custom hmr runtime implementation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "description": "Port that `DevRuntime` will connect to using WebSocket.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
     },
     "InjectImport": {
       "title": "Usage",
@@ -706,7 +838,23 @@
             "null"
           ]
         },
+        "manualPureFunctions": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
         "moduleSideEffects": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "unknownGlobalSideEffects": {
           "type": [
             "boolean",
             "null"
@@ -731,6 +879,55 @@
           ]
         }
       }
+    },
+    "LegalComments": {
+      "oneOf": [
+        {
+          "description": "Don't preserve any comment",
+          "type": "string",
+          "enum": [
+            "none"
+          ]
+        },
+        {
+          "description": "Preserve all legal comments",
+          "type": "string",
+          "enum": [
+            "inline"
+          ]
+        }
+      ]
+    },
+    "LogLevel": {
+      "type": "string",
+      "enum": [
+        "silent",
+        "warn",
+        "info",
+        "debug"
+      ]
+    },
+    "MakeAbsoluteExternalsRelative": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "IfRelativeSource"
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "Bool"
+          ],
+          "properties": {
+            "Bool": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
     },
     "MatchGroup": {
       "type": "object",
@@ -884,6 +1081,15 @@
         }
       ]
     },
+    "PreserveEntrySignatures": {
+      "type": "string",
+      "enum": [
+        "allow-extension",
+        "strict",
+        "exports-only",
+        "false"
+      ]
+    },
     "RawMinifyOptions": {
       "anyOf": [
         {
@@ -997,15 +1203,6 @@
           }
         },
         "mainFiles": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "modules": {
           "type": [
             "array",
             "null"

@@ -1,45 +1,11 @@
 ---
 source: crates/rolldown_testing/src/integration_test.rs
-snapshot_kind: text
 ---
-# warnings
-
-## PARSE_ERROR
-
-```text
-[PARSE_ERROR] Warning: Identifier `DROP` has already been declared
-   ╭─[ empty-last.js:1:10 ]
-   │
- 1 │ function DROP() { return x }
-   │          ──┬─  
-   │            ╰─── `DROP` has already been declared here
- 2 │ function DROP() { return }
-   │          ──┬─  
-   │            ╰─── It can not be redeclared here
-───╯
-
-```
-## PARSE_ERROR
-
-```text
-[PARSE_ERROR] Warning: Identifier `keep` has already been declared
-   ╭─[ empty-first.js:1:10 ]
-   │
- 1 │ function keep() { return }
-   │          ──┬─  
-   │            ╰─── `keep` has already been declared here
- 2 │ function keep() { return x }
-   │          ──┬─  
-   │            ╰─── It can not be redeclared here
-───╯
-
-```
 # Assets
 
 ## empty-async.js
 
 ```js
-
 //#region empty-async.js
 async function keep() {}
 console.log(keep());
@@ -51,7 +17,6 @@ keep(1);
 ## empty-comma.js
 
 ```js
-
 //#region empty-comma.js
 function DROP() {}
 console.log((DROP(), DROP(), foo()));
@@ -67,7 +32,6 @@ foo(), DROP(), DROP();
 ## empty-cross-module.js
 
 ```js
-
 //#region empty-cross-module-def.js
 function DROP() {}
 
@@ -81,7 +45,6 @@ DROP();
 ## empty-first.js
 
 ```js
-
 //#region empty-first.js
 function keep() {
 	return;
@@ -98,7 +61,6 @@ keep(1);
 ## empty-generator.js
 
 ```js
-
 //#region empty-generator.js
 function* keep() {}
 console.log(keep());
@@ -110,7 +72,6 @@ keep(1);
 ## empty-if-else.js
 
 ```js
-
 //#region empty-if-else.js
 function DROP() {}
 if (foo) {
@@ -124,7 +85,6 @@ if (foo) {
 ## empty-last.js
 
 ```js
-
 //#region empty-last.js
 function DROP() {
 	return x;
@@ -140,7 +100,6 @@ DROP();
 ## empty.js
 
 ```js
-
 //#region empty.js
 function DROP() {}
 console.log(DROP(foo(), bar()));
@@ -159,7 +118,6 @@ DROP();
 ## reassign-array.js
 
 ```js
-
 //#region reassign-array.js
 function keep() {}
 [keep] = reassigned;
@@ -172,7 +130,6 @@ keep(1);
 ## reassign-div.js
 
 ```js
-
 //#region reassign-div.js
 function keep() {}
 keep /= reassigned;
@@ -185,7 +142,6 @@ keep(1);
 ## reassign-inc.js
 
 ```js
-
 //#region reassign-inc.js
 function keep() {}
 keep++;
@@ -198,7 +154,6 @@ keep(1);
 ## reassign-object.js
 
 ```js
-
 //#region reassign-object.js
 function keep() {}
 ({keep} = reassigned);
@@ -211,7 +166,6 @@ keep(1);
 ## reassign.js
 
 ```js
-
 //#region reassign.js
 function keep() {}
 keep = reassigned;

@@ -2,7 +2,9 @@ use std::borrow::Cow;
 
 use crate::{stages::link_stage::LinkStageOutput, utils::renamer::Renamer};
 use arcstr::ArcStr;
-use rolldown_common::{Chunk, ChunkIdx, ChunkKind, GetLocalDb, OutputFormat};
+use rolldown_common::{
+  Chunk, ChunkIdx, ChunkKind, GetLocalDb, ModuleScopeSymbolIdMap, OutputFormat,
+};
 use rolldown_rstr::ToRstr;
 use rolldown_utils::ecmascript::legitimize_identifier_name;
 use rustc_hash::FxHashMap;
@@ -13,6 +15,7 @@ pub fn deconflict_chunk_symbols(
   link_output: &LinkStageOutput,
   format: OutputFormat,
   index_chunk_id_to_name: &FxHashMap<ChunkIdx, ArcStr>,
+  map: &ModuleScopeSymbolIdMap<'_>,
 ) {
   let mut renamer = Renamer::new(&link_output.symbol_db, format);
 
@@ -22,7 +25,7 @@ pub fn deconflict_chunk_symbols(
     chunk
       .imports_from_external_modules
       .iter()
-      .filter_map(|(idx, _)| link_output.module_table.modules[*idx].as_external())
+      .filter_map(|(idx, _)| link_output.module_table[*idx].as_external())
       .for_each(|external_module| {
         renamer.add_symbol_in_root_scope(external_module.namespace_ref);
       });
@@ -30,11 +33,11 @@ pub fn deconflict_chunk_symbols(
     match chunk.entry_module_idx() {
       Some(module) => {
         let entry_module =
-          link_output.module_table.modules[module].as_normal().expect("should be normal module");
+          link_output.module_table[module].as_normal().expect("should be normal module");
         link_output.metas[entry_module.idx].star_exports_from_external_modules.iter().for_each(
           |rec_idx| {
             let rec = &entry_module.ecma_view.import_records[*rec_idx];
-            let external_module = &link_output.module_table.modules[rec.resolved_module]
+            let external_module = &link_output.module_table[rec.resolved_module]
               .as_external()
               .expect("Should be external module here");
             renamer.add_symbol_in_root_scope(external_module.namespace_ref);
@@ -49,11 +52,16 @@ pub fn deconflict_chunk_symbols(
     .modules
     .iter()
     .copied()
-    .filter_map(|id| link_output.module_table.modules[id].as_normal())
+    .filter_map(|id| link_output.module_table[id].as_normal())
     .flat_map(|m| {
-      let ast_scope =
-        &link_output.ast_scope_table[m.ast_scope_idx.expect("ast_scope_idx should be set")];
-      ast_scope.root_unresolved_references().keys().map(Cow::Borrowed)
+      link_output.symbol_db[m.idx]
+        .as_ref()
+        .unwrap()
+        .ast_scopes
+        .scoping()
+        .root_unresolved_references()
+        .keys()
+        .map(Cow::Borrowed)
     })
     .for_each(|name| {
       // global names should be reserved
@@ -95,9 +103,18 @@ pub fn deconflict_chunk_symbols(
   if matches!(format, OutputFormat::Esm) {
     chunk.imports_from_external_modules.iter().for_each(|(module, _)| {
       let db = link_output.symbol_db.local_db(*module);
-      db.classic_data.iter_enumerated().skip(1).for_each(|(symbol, _)| {
-        renamer.add_symbol_in_root_scope((*module, symbol).into());
+      db.classic_data.iter_enumerated().for_each(|(symbol, _)| {
+        let symbol_ref = (*module, symbol).into();
+        if link_output.used_symbol_refs.contains(&symbol_ref) {
+          renamer.add_symbol_in_root_scope(symbol_ref);
+        }
       });
+      for symbol_id in db.ast_scopes.facade_symbol_classic_data().keys() {
+        let symbol_ref = (*module, *symbol_id).into();
+        if link_output.used_symbol_refs.contains(&symbol_ref) {
+          renamer.add_symbol_in_root_scope(symbol_ref);
+        }
+      }
     });
   }
 
@@ -107,8 +124,12 @@ pub fn deconflict_chunk_symbols(
     .copied()
     // Starts with entry module
     .rev()
-    .filter_map(|id| link_output.module_table.modules[id].as_normal())
+    .filter_map(|id| link_output.module_table[id].as_normal())
     .for_each(|module| {
+      if let Some(hmr_hot_ref) = module.hmr_hot_ref {
+        renamer.add_symbol_in_root_scope(hmr_hot_ref);
+      }
+
       module
         .stmt_infos
         .iter()
@@ -120,11 +141,7 @@ pub fn deconflict_chunk_symbols(
     });
 
   // rename non-top-level names
-  renamer.rename_non_root_symbol(
-    &chunk.modules,
-    &link_output.module_table.modules,
-    &link_output.ast_scope_table,
-  );
+  renamer.rename_non_root_symbol(&chunk.modules, link_output, map);
 
-  (chunk.canonical_names, chunk.canonical_name_by_token) = renamer.into_canonical_names();
+  chunk.canonical_names = renamer.into_canonical_names();
 }

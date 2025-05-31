@@ -1,11 +1,11 @@
+use self::render_chunk_exports::get_chunk_export_names;
 use rolldown_common::{
-  Chunk, ChunkKind, ModuleId, RenderedModule, RollupPreRenderedChunk, RollupRenderedChunk,
+  Chunk, ChunkKind, ModuleId, NormalizedBundlerOptions, RenderedModule, RollupPreRenderedChunk,
+  RollupRenderedChunk,
 };
 use rustc_hash::FxHashMap;
 
-use crate::{chunk_graph::ChunkGraph, stages::link_stage::LinkStageOutput};
-
-use self::render_chunk_exports::get_chunk_export_names;
+use crate::{stages::link_stage::LinkStageOutput, types::generator::GenerateContext};
 
 pub mod deconflict_chunk_symbols;
 pub mod determine_export_mode;
@@ -18,30 +18,28 @@ pub mod validate_options_for_multi_chunk_output;
 pub fn generate_pre_rendered_chunk(
   chunk: &Chunk,
   graph: &LinkStageOutput,
+  options: &NormalizedBundlerOptions,
 ) -> RollupPreRenderedChunk {
   RollupPreRenderedChunk {
     name: chunk.name.clone().expect("should have name"),
     is_entry: matches!(&chunk.kind, ChunkKind::EntryPoint { is_user_defined, .. } if *is_user_defined),
     is_dynamic_entry: matches!(&chunk.kind, ChunkKind::EntryPoint { is_user_defined, .. } if !*is_user_defined),
     facade_module_id: match &chunk.kind {
-      ChunkKind::EntryPoint { module, .. } => Some(graph.module_table.modules[*module].id().into()),
+      ChunkKind::EntryPoint { module, .. } => Some(graph.module_table[*module].id().into()),
       ChunkKind::Common => None,
     },
-    module_ids: chunk
-      .modules
-      .iter()
-      .map(|id| graph.module_table.modules[*id].id().into())
-      .collect(),
-    exports: get_chunk_export_names(chunk, graph),
+    module_ids: chunk.modules.iter().map(|id| graph.module_table[*id].id().into()).collect(),
+    exports: get_chunk_export_names(chunk, graph, options),
   }
 }
 
 pub fn generate_rendered_chunk(
-  chunk: &Chunk,
+  chunk: &GenerateContext<'_>,
   render_modules: FxHashMap<ModuleId, RenderedModule>,
-  pre_rendered_chunk: &RollupPreRenderedChunk,
-  chunk_graph: &ChunkGraph,
 ) -> RollupRenderedChunk {
+  let GenerateContext { chunk_graph, chunk, link_output, .. } = chunk;
+  let pre_rendered_chunk =
+    chunk.pre_rendered_chunk.as_ref().expect("Should have pre-rendered chunk");
   RollupRenderedChunk {
     name: pre_rendered_chunk.name.clone(),
     is_entry: pre_rendered_chunk.is_entry,
@@ -65,6 +63,12 @@ pub fn generate_rendered_chunk(
           .expect("should have preliminary_filename")
           .clone()
       })
+      .chain(
+        chunk
+          .imports_from_external_modules
+          .iter()
+          .map(|(idx, _)| link_output.module_table[*idx].id().into()),
+      )
       .collect(),
     dynamic_imports: chunk
       .cross_chunk_dynamic_imports
@@ -77,6 +81,5 @@ pub fn generate_rendered_chunk(
           .clone()
       })
       .collect(),
-    debug_id: 0,
   }
 }

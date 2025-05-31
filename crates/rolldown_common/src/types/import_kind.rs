@@ -28,7 +28,7 @@ impl TryFrom<&str> for ImportKind {
 
   fn try_from(value: &str) -> Result<Self, Self::Error> {
     match value {
-      "import" => Ok(Self::Import),
+      "import-statement" => Ok(Self::Import),
       "dynamic-import" => Ok(Self::DynamicImport),
       "require-call" => Ok(Self::Require),
       "import-rule" => Ok(Self::AtImport),
@@ -47,7 +47,7 @@ impl Display for ImportKind {
       Self::Require => write!(f, "require-call"),
       // TODO(hyf0): check if this literal is the same as esbuild's
       Self::AtImport => write!(f, "import-rule"),
-      ImportKind::UrlImport => write!(f, "url-import"),
+      ImportKind::UrlImport => write!(f, "url-token"),
       ImportKind::NewUrl => write!(f, "new-url"),
       ImportKind::HotAccept => write!(f, "hot-accept"),
     }

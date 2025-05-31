@@ -1,47 +1,36 @@
 ---
 source: crates/rolldown_testing/src/integration_test.rs
-snapshot_kind: text
 ---
 # Assets
 
 ## main.js
 
 ```js
-import { __esm } from "./rolldown.js";
+import { __esm } from "./rolldown-runtime.js";
 
 //#region main.js
 var init_main = __esm({ "main.js"() {
-	import("./square.js");
+	import("./square.js").then(console.log);
 } });
 
 //#endregion
 init_main();
 ```
-## rolldown.js
+## rolldown-runtime.js
 
 ```js
 
-
-export { __esm, __export };
+export { __esm };
 ```
 ## square.js
 
 ```js
-import { __esm, __export } from "./rolldown.js";
+import { __esm } from "./rolldown-runtime.js";
 
 //#region square.json
-var square_exports = {};
-__export(square_exports, {
-	default: () => square_default,
-	hello: () => hello
-});
-var hello, square_default;
-var square_exports = __esm({ "square.json"() {
-	hello = "world";
-	square_default = { hello };
-} });
+var hello = "world";
+var square_default = { hello };
 
 //#endregion
-square_exports();
 export { square_default as default, hello };
 ```

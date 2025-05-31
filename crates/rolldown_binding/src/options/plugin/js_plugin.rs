@@ -2,29 +2,23 @@ use crate::types::{
   binding_module_info::BindingModuleInfo,
   binding_normalized_options::BindingNormalizedOptions,
   binding_outputs::{to_js_diagnostic, update_outputs},
+  binding_rendered_chunk::BindingRenderedChunk,
   js_callback::MaybeAsyncJsCallbackExt,
 };
-use anyhow::Ok;
 use napi::bindgen_prelude::FnArgs;
-use rolldown::ModuleType;
 use rolldown_common::NormalModule;
-use rolldown_plugin::{__inner::SharedPluginable, Plugin, typedmap::TypedMapKey};
-use rolldown_utils::pattern_filter::{self, FilterResult};
-use std::{
-  borrow::Cow,
-  ops::Deref,
-  path::{Path, PathBuf},
-  sync::Arc,
-};
-use sugar_path::SugarPath;
+use rolldown_plugin::{__inner::SharedPluginable, HookUsage, Plugin, typedmap::TypedMapKey};
+use rolldown_utils::filter_expression::filter_exprs_interpreter;
+use std::{borrow::Cow, ops::Deref, sync::Arc};
+use tracing::{Instrument, debug_span};
 
 use super::{
-  BindingPluginOptions,
+  BindingPluginOptions, FilterExprCache,
   binding_transform_context::BindingTransformPluginContext,
   types::{
-    binding_hook_filter::BindingTransformHookFilter,
     binding_hook_resolve_id_extra_args::BindingHookResolveIdExtraArgs,
     binding_plugin_transform_extra_args::BindingTransformHookExtraArgs,
+    binding_render_chunk_meta_chunks::BindingRenderedChunkMeta,
   },
 };
 
@@ -34,10 +28,11 @@ pub struct JsPluginContextResolveCustomArgId;
 impl TypedMapKey for JsPluginContextResolveCustomArgId {
   type Value = u32;
 }
-
 #[derive(Debug)]
 pub struct JsPlugin {
   pub(crate) inner: BindingPluginOptions,
+  /// Since there at most three key in the cache, use vec should always faster than hashmap
+  pub(crate) filter_expr_cache: FilterExprCache,
 }
 
 impl Deref for JsPlugin {
@@ -51,11 +46,13 @@ impl Deref for JsPlugin {
 impl JsPlugin {
   #[cfg_attr(target_family = "wasm", allow(unused))]
   pub(super) fn new(inner: BindingPluginOptions) -> Self {
-    Self { inner }
+    let filter_expr_cache = inner.pre_compile_filter_expr();
+    Self { inner, filter_expr_cache }
   }
 
   pub(crate) fn new_shared(inner: BindingPluginOptions) -> SharedPluginable {
-    Arc::new(Self { inner })
+    let filter_expr_cache = inner.pre_compile_filter_expr();
+    Arc::new(Self { inner, filter_expr_cache })
   }
 }
 
@@ -75,6 +72,7 @@ impl Plugin for JsPlugin {
       cb.await_call(
         (ctx.clone().into(), BindingNormalizedOptions::new(Arc::clone(args.options))).into(),
       )
+      .instrument(debug_span!("build_start_hook", plugin_name = self.name))
       .await?;
     }
     Ok(())
@@ -90,20 +88,14 @@ impl Plugin for JsPlugin {
     args: &rolldown_plugin::HookResolveIdArgs<'_>,
   ) -> rolldown_plugin::HookResolveIdReturn {
     let Some(cb) = &self.resolve_id else { return Ok(None) };
-
-    if let Some(resolve_id_filter) = &self.inner.resolve_id_filter {
-      let stabilized_path = Path::new(args.specifier).relative(ctx.cwd());
-      let normalized_id = stabilized_path.to_string_lossy();
-
-      let matched = pattern_filter::filter(
-        resolve_id_filter.exclude.as_deref(),
-        resolve_id_filter.include.as_deref(),
-        args.specifier,
-        &normalized_id,
-      )
-      .inner();
-
-      if !matched {
+    if let Some(ref v) = self.filter_expr_cache.resolve_id {
+      if !filter_exprs_interpreter(
+        v,
+        Some(args.specifier),
+        None,
+        None,
+        ctx.cwd().to_string_lossy().as_ref(),
+      ) {
         return Ok(None);
       }
     }
@@ -127,8 +119,10 @@ impl Plugin for JsPlugin {
         )
           .into(),
       )
+      .instrument(debug_span!("resolve_id_hook", plugin_name = self.name))
       .await?
-      .map(Into::into),
+      .map(TryInto::try_into)
+      .transpose()?,
     )
   }
 
@@ -147,8 +141,10 @@ impl Plugin for JsPlugin {
           (ctx.clone().into(), args.specifier.to_string(), args.importer.map(str::to_string))
             .into(),
         )
+        .instrument(debug_span!("resolve_dynamic_import_hook", plugin_name = self.name))
         .await?
-        .map(Into::into),
+        .map(TryInto::try_into)
+        .transpose()?,
       ),
       _ => Ok(None),
     }
@@ -165,24 +161,20 @@ impl Plugin for JsPlugin {
   ) -> rolldown_plugin::HookLoadReturn {
     let Some(cb) = &self.load else { return Ok(None) };
 
-    if let Some(load_filter) = &self.load_filter {
-      let stabilized_path = Path::new(args.id).relative(ctx.cwd());
-      let normalized_id = stabilized_path.to_string_lossy();
-
-      let matched = pattern_filter::filter(
-        load_filter.exclude.as_deref(),
-        load_filter.include.as_deref(),
-        args.id,
-        &normalized_id,
-      )
-      .inner();
-
-      if !matched {
+    if let Some(ref v) = self.filter_expr_cache.load {
+      if !filter_exprs_interpreter(
+        v,
+        Some(args.id),
+        None,
+        None,
+        ctx.cwd().to_string_lossy().as_ref(),
+      ) {
         return Ok(None);
       }
     }
 
     cb.await_call((ctx.clone().into(), args.id.to_string()).into())
+      .instrument(debug_span!("load_hook", plugin_name = self.name))
       .await?
       .map(TryInto::try_into)
       .transpose()
@@ -199,14 +191,17 @@ impl Plugin for JsPlugin {
   ) -> rolldown_plugin::HookTransformReturn {
     let Some(cb) = &self.transform else { return Ok(None) };
 
-    if !filter_transform(
-      self.transform_filter.as_ref(),
-      args.id,
-      ctx.inner.cwd(),
-      args.module_type,
-      args.code,
-    )? {
-      return Ok(None);
+    // Custom field have higher priority, it will override the default filter
+    if let Some(ref v) = self.filter_expr_cache.transform {
+      if !filter_exprs_interpreter(
+        v,
+        Some(args.id),
+        Some(args.code),
+        Some(args.module_type.to_string().as_ref()),
+        ctx.inner.cwd().to_string_lossy().as_ref(),
+      ) {
+        return Ok(None);
+      }
     }
 
     let extra_args = BindingTransformHookExtraArgs { module_type: args.module_type.to_string() };
@@ -220,6 +215,7 @@ impl Plugin for JsPlugin {
       )
         .into(),
     )
+    .instrument(debug_span!("transform_hook", plugin_name = self.name))
     .await?
     .map(TryInto::try_into)
     .transpose()
@@ -236,7 +232,9 @@ impl Plugin for JsPlugin {
     _normal_module: &NormalModule,
   ) -> rolldown_plugin::HookNoopReturn {
     if let Some(cb) = &self.module_parsed {
-      cb.await_call((ctx.clone().into(), BindingModuleInfo::new(module_info)).into()).await?;
+      cb.await_call((ctx.clone().into(), BindingModuleInfo::new(module_info)).into())
+        .instrument(debug_span!("module_parsed_hook", plugin_name = self.name))
+        .await?;
     }
     Ok(())
   }
@@ -264,6 +262,7 @@ impl Plugin for JsPlugin {
         )
           .into(),
       )
+      .instrument(debug_span!("build_end_hook", plugin_name = self.name))
       .await?;
     }
     Ok(())
@@ -284,6 +283,7 @@ impl Plugin for JsPlugin {
       cb.await_call(
         (ctx.clone().into(), BindingNormalizedOptions::new(Arc::clone(args.options))).into(),
       )
+      .instrument(debug_span!("render_start_hook", plugin_name = self.name))
       .await?;
     }
     Ok(())
@@ -296,14 +296,17 @@ impl Plugin for JsPlugin {
   async fn banner(
     &self,
     ctx: &rolldown_plugin::PluginContext,
-    args: &rolldown_plugin::HookAddonArgs<'_>,
+    args: &rolldown_plugin::HookAddonArgs,
   ) -> rolldown_plugin::HookInjectionOutputReturn {
     match &self.banner {
       Some(cb) => Ok(
-        cb.await_call((ctx.clone().into(), args.chunk.clone().into()).into())
-          .await?
-          .map(TryInto::try_into)
-          .transpose()?,
+        cb.await_call(
+          (ctx.clone().into(), BindingRenderedChunk::new(Arc::clone(&args.chunk))).into(),
+        )
+        .instrument(debug_span!("banner_hook", plugin_name = self.name))
+        .await?
+        .map(TryInto::try_into)
+        .transpose()?,
       ),
       _ => Ok(None),
     }
@@ -316,14 +319,17 @@ impl Plugin for JsPlugin {
   async fn intro(
     &self,
     ctx: &rolldown_plugin::PluginContext,
-    args: &rolldown_plugin::HookAddonArgs<'_>,
+    args: &rolldown_plugin::HookAddonArgs,
   ) -> rolldown_plugin::HookInjectionOutputReturn {
     match &self.intro {
       Some(cb) => Ok(
-        cb.await_call((ctx.clone().into(), args.chunk.clone().into()).into())
-          .await?
-          .map(TryInto::try_into)
-          .transpose()?,
+        cb.await_call(
+          (ctx.clone().into(), BindingRenderedChunk::new(Arc::clone(&args.chunk))).into(),
+        )
+        .instrument(debug_span!("intro_hook", plugin_name = self.name))
+        .await?
+        .map(TryInto::try_into)
+        .transpose()?,
       ),
       _ => Ok(None),
     }
@@ -336,14 +342,17 @@ impl Plugin for JsPlugin {
   async fn outro(
     &self,
     ctx: &rolldown_plugin::PluginContext,
-    args: &rolldown_plugin::HookAddonArgs<'_>,
+    args: &rolldown_plugin::HookAddonArgs,
   ) -> rolldown_plugin::HookInjectionOutputReturn {
     match &self.outro {
       Some(cb) => Ok(
-        cb.await_call((ctx.clone().into(), args.chunk.clone().into()).into())
-          .await?
-          .map(TryInto::try_into)
-          .transpose()?,
+        cb.await_call(
+          (ctx.clone().into(), BindingRenderedChunk::new(Arc::clone(&args.chunk))).into(),
+        )
+        .instrument(debug_span!("outro_hook", plugin_name = self.name))
+        .await?
+        .map(TryInto::try_into)
+        .transpose()?,
       ),
       _ => Ok(None),
     }
@@ -356,14 +365,17 @@ impl Plugin for JsPlugin {
   async fn footer(
     &self,
     ctx: &rolldown_plugin::PluginContext,
-    args: &rolldown_plugin::HookAddonArgs<'_>,
+    args: &rolldown_plugin::HookAddonArgs,
   ) -> rolldown_plugin::HookInjectionOutputReturn {
     match &self.footer {
       Some(cb) => Ok(
-        cb.await_call((ctx.clone().into(), args.chunk.clone().into()).into())
-          .await?
-          .map(TryInto::try_into)
-          .transpose()?,
+        cb.await_call(
+          (ctx.clone().into(), BindingRenderedChunk::new(Arc::clone(&args.chunk))).into(),
+        )
+        .instrument(debug_span!("footer_hook", plugin_name = self.name))
+        .await?
+        .map(TryInto::try_into)
+        .transpose()?,
       ),
       _ => Ok(None),
     }
@@ -378,23 +390,34 @@ impl Plugin for JsPlugin {
     ctx: &rolldown_plugin::PluginContext,
     args: &rolldown_plugin::HookRenderChunkArgs<'_>,
   ) -> rolldown_plugin::HookRenderChunkReturn {
-    match &self.render_chunk {
-      Some(cb) => Ok(
-        cb.await_call(
-          (
-            ctx.clone().into(),
-            args.code.to_string(),
-            args.chunk.clone().into(),
-            BindingNormalizedOptions::new(Arc::clone(args.options)),
-          )
-            .into(),
-        )
-        .await?
-        .map(TryInto::try_into)
-        .transpose()?,
-      ),
-      _ => Ok(None),
+    let Some(cb) = &self.render_chunk else { return Ok(None) };
+
+    if let Some(ref v) = self.filter_expr_cache.render_chunk {
+      if !filter_exprs_interpreter(
+        v,
+        None,
+        Some(&args.code),
+        None,
+        ctx.cwd().to_string_lossy().as_ref(),
+      ) {
+        return Ok(None);
+      }
     }
+
+    cb.await_call(
+      (
+        ctx.clone().into(),
+        args.code.to_string(),
+        BindingRenderedChunk::new(Arc::clone(&args.chunk)),
+        BindingNormalizedOptions::new(Arc::clone(args.options)),
+        BindingRenderedChunkMeta::new(Arc::clone(&args.chunks)),
+      )
+        .into(),
+    )
+    .instrument(debug_span!("render_chunk_hook", plugin_name = self.name))
+    .await?
+    .map(TryInto::try_into)
+    .transpose()
   }
 
   fn render_chunk_meta(&self) -> Option<rolldown_plugin::PluginHookMeta> {
@@ -404,10 +427,14 @@ impl Plugin for JsPlugin {
   async fn augment_chunk_hash(
     &self,
     ctx: &rolldown_plugin::PluginContext,
-    chunk: &rolldown_common::RollupRenderedChunk,
+    chunk: Arc<rolldown_common::RollupRenderedChunk>,
   ) -> rolldown_plugin::HookAugmentChunkHashReturn {
     match &self.augment_chunk_hash {
-      Some(cb) => Ok(cb.await_call((ctx.clone().into(), chunk.clone().into()).into()).await?),
+      Some(cb) => Ok(
+        cb.await_call((ctx.clone().into(), BindingRenderedChunk::new(chunk)).into())
+          .instrument(debug_span!("augment_chunk_hash_hook", plugin_name = self.name))
+          .await?,
+      ),
       _ => Ok(None),
     }
   }
@@ -433,6 +460,7 @@ impl Plugin for JsPlugin {
         )
           .into(),
       )
+      .instrument(debug_span!("render_error_hook", plugin_name = self.name))
       .await?;
     }
     Ok(())
@@ -458,6 +486,7 @@ impl Plugin for JsPlugin {
           )
             .into(),
         )
+        .instrument(debug_span!("generate_bundle_hook", plugin_name = self.name))
         .await?;
       update_outputs(args.bundle, changed)?;
     }
@@ -483,6 +512,7 @@ impl Plugin for JsPlugin {
           )
             .into(),
         )
+        .instrument(debug_span!("write_bundle_hook", plugin_name = self.name))
         .await?;
       update_outputs(args.bundle, changed)?;
     }
@@ -498,7 +528,9 @@ impl Plugin for JsPlugin {
     ctx: &rolldown_plugin::PluginContext,
   ) -> rolldown_plugin::HookNoopReturn {
     if let Some(cb) = &self.close_bundle {
-      cb.await_call(FnArgs { data: (ctx.clone().into(),) }).await?;
+      cb.await_call(FnArgs { data: (ctx.clone().into(),) })
+        .instrument(debug_span!("close_bundle_hook", plugin_name = self.name))
+        .await?;
     }
     Ok(())
   }
@@ -514,7 +546,9 @@ impl Plugin for JsPlugin {
     event: rolldown_common::WatcherChangeKind,
   ) -> rolldown_plugin::HookNoopReturn {
     if let Some(cb) = &self.watch_change {
-      cb.await_call((ctx.clone().into(), path.to_string(), event.to_string()).into()).await?;
+      cb.await_call((ctx.clone().into(), path.to_string(), event.to_string()).into())
+        .instrument(debug_span!("watch_change_hook", plugin_name = self.name))
+        .await?;
     }
     Ok(())
   }
@@ -528,7 +562,9 @@ impl Plugin for JsPlugin {
     ctx: &rolldown_plugin::PluginContext,
   ) -> rolldown_plugin::HookNoopReturn {
     if let Some(cb) = &self.close_watcher {
-      cb.await_call(FnArgs { data: (ctx.clone().into(),) }).await?;
+      cb.await_call(FnArgs { data: (ctx.clone().into(),) })
+        .instrument(debug_span!("close_watcher_hook", plugin_name = self.name))
+        .await?;
     }
     Ok(())
   }
@@ -536,67 +572,8 @@ impl Plugin for JsPlugin {
   fn close_watcher_meta(&self) -> Option<rolldown_plugin::PluginHookMeta> {
     self.close_watcher_meta.as_ref().map(Into::into)
   }
-}
 
-/// If the transform hook is filtered out and need to be skipped.
-/// Using `Option<bool>` for better programming experience.
-/// return `None` means it is early return, should not be skipped.
-/// return `Some(false)` means it should be skipped.
-/// return `Some(true)` means it should not be skipped.
-/// Since transform has three different filter, so we need to check all of them.
-fn filter_transform(
-  transform_filter: Option<&BindingTransformHookFilter>,
-  id: &str,
-  cwd: &PathBuf,
-  module_type: &ModuleType,
-  code: &str,
-) -> anyhow::Result<bool> {
-  let Some(transform_filter) = transform_filter else {
-    return Ok(true);
-  };
-
-  let mut fallback_ret = if let Some(ref module_type_filter) = transform_filter.module_type {
-    if module_type_filter.iter().any(|ty| ty.as_ref() == module_type) {
-      return Ok(true);
-    }
-    false
-  } else {
-    true
-  };
-
-  if let Some(ref id_filter) = transform_filter.id {
-    let stabilized_path = Path::new(id).relative(cwd);
-    let normalized_id = stabilized_path.to_string_lossy();
-
-    let id_res = pattern_filter::filter(
-      id_filter.exclude.as_deref(),
-      id_filter.include.as_deref(),
-      id,
-      &normalized_id,
-    );
-
-    // it matched by `exclude` or `include`, early return
-    if let FilterResult::Match(id_res) = id_res {
-      return Ok(id_res);
-    }
-
-    fallback_ret = fallback_ret && id_res.inner();
+  fn register_hook_usage(&self) -> HookUsage {
+    HookUsage::from_bits(self.inner.hook_usage).expect("Failed to register hook usage")
   }
-
-  if let Some(ref code_filter) = transform_filter.code {
-    let code_res = pattern_filter::filter_code(
-      code_filter.exclude.as_deref(),
-      code_filter.include.as_deref(),
-      code,
-    );
-
-    // it matched by `exclude` or `include`, early return
-    if let FilterResult::Match(code_res) = code_res {
-      return Ok(code_res);
-    }
-
-    fallback_ret = fallback_ret && code_res.inner();
-  }
-
-  Ok(fallback_ret)
 }

@@ -21,19 +21,20 @@ impl<'source> SourceJoiner<'source> {
     self.inner.push(Box::new(source));
   }
 
-  pub fn prepend_source(&mut self, source: Box<dyn Source + Send + 'source>) {
+  pub fn prepend_source<T: Source + Send + 'source>(&mut self, source: T) {
     if let Some(sourcemap) = source.sourcemap() {
       self.accumulate_sourcemap_data_size(sourcemap);
     }
-    self.prepend_source.push(source);
+    self.prepend_source.push(Box::new(source));
   }
 
   pub fn join(&self) -> (String, Option<SourceMap>) {
     let sources_len = self.prepend_source.len() + self.inner.len();
     let sources_iter = self.prepend_source.iter().chain(self.inner.iter()).enumerate();
 
-    let size_hint_of_ret_source = sources_iter.clone().map(|(_idx, source)| source.content().len()).sum::<usize>()
-        + /* Each source we will emit a '\n' but exclude last one */ (sources_len - /* Exclude the last source  */ 1);
+    let size_hint_of_ret_source =
+      sources_iter.clone().map(|(_idx, source)| source.content().len()).sum::<usize>()
+        + sources_len;
     let mut ret_source = String::with_capacity(size_hint_of_ret_source);
 
     let mut line_offset = 0;
@@ -75,7 +76,7 @@ fn test_concat_sourcemaps() {
   use crate::{SourceJoiner, SourceMapSource};
   use oxc::{
     allocator::Allocator,
-    codegen::{CodeGenerator, CodegenOptions, CodegenReturn},
+    codegen::{Codegen, CodegenOptions, CodegenReturn},
     parser::Parser,
     span::SourceType,
   };
@@ -83,7 +84,7 @@ fn test_concat_sourcemaps() {
 
   let mut source_joiner = SourceJoiner::default();
   source_joiner.append_source("\nconsole.log()".to_string());
-  source_joiner.prepend_source(Box::new("// banner".to_string()));
+  source_joiner.prepend_source("// banner".to_string());
 
   let filename = "foo.js".to_string();
   let allocator = Allocator::default();
@@ -91,8 +92,9 @@ fn test_concat_sourcemaps() {
   let source_type = SourceType::from_path(&filename).unwrap();
   let ret1 = Parser::new(&allocator, &source_text, source_type).parse();
 
-  let CodegenReturn { map, code, .. } = CodeGenerator::new()
+  let CodegenReturn { map, code, .. } = Codegen::new()
     .with_options(CodegenOptions {
+      comments: false,
       source_map_path: Some(filename.into()),
       ..CodegenOptions::default()
     })

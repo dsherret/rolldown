@@ -61,6 +61,7 @@ impl IntegrationTest {
     self.run_with_plugins(options, vec![]).await;
   }
 
+  #[allow(clippy::unnecessary_debug_formatting)]
   pub async fn run_with_plugins(
     &self,
     mut options: BundlerOptions,
@@ -112,16 +113,18 @@ impl IntegrationTest {
     }
   }
 
+  #[allow(clippy::unnecessary_debug_formatting)]
   pub async fn run_multiple(
     &self,
     multiple_options: Vec<NamedBundlerOptions>,
     test_folder_path: &Path,
+    plugins: Vec<SharedPluginable>,
   ) {
     let mut snapshot_outputs = vec![];
     for mut named_options in multiple_options {
       self.apply_test_defaults(&mut named_options.options);
 
-      let mut bundler = Bundler::with_plugins(named_options.options, vec![]);
+      let mut bundler = Bundler::with_plugins(named_options.options, plugins.clone());
 
       let debug_title = named_options.name.clone().unwrap_or_else(String::new);
 
@@ -407,7 +410,7 @@ impl IntegrationTest {
     } else {
       String::new()
     };
-    let snapshot = [
+    [
       errors_section,
       warnings_section,
       assets_section,
@@ -416,8 +419,7 @@ impl IntegrationTest {
     ]
     .join("\n")
     .trim()
-    .to_owned();
-    snapshot
+    .to_owned()
   }
 
   fn snapshot_bundle_output(
